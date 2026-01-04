@@ -39,30 +39,44 @@ def generate_vcd_dummy(isomer_type='Delta'):
     y_ir += np.abs(noise)
     y_vcd += noise * 0.1
     
-    df = pd.DataFrame({'Wavenumber': x, 'IR': y_ir, 'VCD': y_vcd})
-    df = df.sort_values('Wavenumber', ascending=False)
-    return df, x, y_ir, y_vcd
+    return x, y_ir, y_vcd
 
 # ---------------------------------------------------------
-# 関数: データ読み込み
+# 関数: データ読み込み (列指定対応)
 # ---------------------------------------------------------
-def load_vcd_data(uploaded_file, sep_char, skip_rows):
+def load_vcd_data(uploaded_file, sep_char, skip_rows, col_indices):
+    """
+    col_indices: {'x': 0, 'ir': 1, 'vcd': 2} (0-based index)
+    """
     try:
+        # ヘッダーなしとして読み込み、スキップ行は手動指定
+        # テキスト形式の場合は sep='\t' または sep=None(自動判定) が良いが、ここではタブ指定とする
         df = pd.read_csv(uploaded_file, sep=sep_char, skiprows=skip_rows, header=None)
+        
+        # 数値変換 (変換できない文字が含まれる行は削除)
         df = df.apply(pd.to_numeric, errors='coerce').dropna()
-        if df.shape[1] < 3: return None
-        return {'filename': uploaded_file.name, 
-                'x': df.iloc[:, 0].values, 
-                'ir': df.iloc[:, 1].values, 
-                'vcd': df.iloc[:, 2].values}
-    except:
+        
+        # 指定列が存在するか確認
+        max_idx = max(col_indices.values())
+        if max_idx >= df.shape[1]:
+            st.error(f"{uploaded_file.name}: 指定された列番号 ({max_idx+1}) がデータ列数 ({df.shape[1]}) を超えています。")
+            return None
+
+        # データ抽出
+        x = df.iloc[:, col_indices['x']].values
+        ir = df.iloc[:, col_indices['ir']].values
+        vcd = df.iloc[:, col_indices['vcd']].values
+        
+        return {'filename': uploaded_file.name, 'x': x, 'ir': ir, 'vcd': vcd}
+
+    except Exception as e:
+        st.error(f"読み込みエラー: {uploaded_file.name}\n{e}")
         return None
 
 # ---------------------------------------------------------
 # 関数: Gnuplotパッケージ作成 (2軸対応)
 # ---------------------------------------------------------
 def create_gnuplot_package(delta_list, lambda_list, x_lim, vcd_lim, ir_lim):
-    # データ結合処理
     all_x = []
     for d in delta_list + lambda_list: all_x.extend(d['x'])
     if not all_x: return None
@@ -91,16 +105,15 @@ def create_gnuplot_package(delta_list, lambda_list, x_lim, vcd_lim, ir_lim):
 
     data_str = df_out.to_csv(sep='\t', index=False, float_format='%.5f')
 
-    # --- Gnuplotスクリプト (2軸設定) ---
+    # Gnuplot Script (Dual Axis)
     plot_cmds = []
     curr = 2
     for item in col_names:
         c = COLOR_DELTA if item['type'] == 'Delta' else COLOR_LAMBDA
         t = item['label'].replace('_', '\\_')
-        
-        # IR (Right Axis: y2) -> 点線 (dt 2)
+        # IR: Right Axis (y2), Dotted
         plot_cmds.append(f"'data.dat' u 1:{curr} axes x1y2 w l lc rgb '{c}' dt 2 notitle") 
-        # VCD (Left Axis: y1) -> 実線 (dt 1)
+        # VCD: Left Axis (y1), Solid
         plot_cmds.append(f"'data.dat' u 1:{curr+1} axes x1y1 w l lc rgb '{c}' dt 1 title '{t} ({item['type']})'")
         curr += 2
 
@@ -108,23 +121,18 @@ def create_gnuplot_package(delta_list, lambda_list, x_lim, vcd_lim, ir_lim):
 set terminal pngcairo size 800,600 font "Arial,12"
 set output 'vcd_dual_axis.png'
 
-# 軸設定
 set xrange [{x_lim[0]}:{x_lim[1]}]
 set xlabel "Wavenumber (cm^{{-1}})"
 
-# 左軸 (VCD)
 set ylabel "VCD Intensity"
 set yrange [{vcd_lim[0] if vcd_lim[0] else ":"}:{vcd_lim[1] if vcd_lim[1] else ":"}]
 set ytics nomirror
 
-# 右軸 (IR)
 set y2label "Absorbance"
 set y2range [{ir_lim[0] if ir_lim[0] else ":"}:{ir_lim[1] if ir_lim[1] else ":"}]
 set y2tics
 
-# ゼロ線 (左軸用)
 set xzeroaxis lt 1 lc rgb "black" lw 1
-
 set grid ls 1 lc rgb "gray" lw 0.5 dt 2
 set key top right
 
@@ -148,32 +156,80 @@ def main():
     if 'delta_data' not in st.session_state: st.session_state['delta_data'] = []
     if 'lambda_data' not in st.session_state: st.session_state['lambda_data'] = []
 
-    # --- サイドバー: データ ---
-    st.sidebar.header("1. データソース")
-    if st.sidebar.button("ダミーデータをロード"):
-        d_df, d_x, d_ir, d_vcd = generate_vcd_dummy('Delta')
-        st.session_state['delta_data'] = [{'filename': 'Dummy_Delta', 'x': d_x, 'ir': d_ir, 'vcd': d_vcd}]
-        l_df, l_x, l_ir, l_vcd = generate_vcd_dummy('Lambda')
-        st.session_state['lambda_data'] = [{'filename': 'Dummy_Lambda', 'x': l_x, 'ir': l_ir, 'vcd': l_vcd}]
+    # --- サイドバー: データ読み込み設定 ---
+    st.sidebar.header("1. データ設定")
 
-    sep_mode = st.sidebar.radio("区切り文字", ["カンマ (,)", "タブ (TAB)"])
-    sep_char = ',' if "カンマ" in sep_mode else '\t'
-    skip_row = st.sidebar.number_input("スキップ行数", 0, value=0)
+    # 1. ファイル形式の選択
+    st.sidebar.subheader("入力ファイル形式")
+    file_format = st.sidebar.radio(
+        "形式を選択してください:",
+        ["CSV形式 (.csv)", "テキスト形式 (.txt / .dat)"]
+    )
+    
+    # 形式に応じた区切り文字の設定
+    if "CSV" in file_format:
+        sep_char = ','
+        file_types = ['csv']
+        st.sidebar.caption("※ カンマ (,) 区切りとして読み込みます")
+    else:
+        sep_char = '\t' # テキスト形式はタブ区切りをデフォルトとします
+        file_types = ['txt', 'dat']
+        st.sidebar.caption("※ タブ (TAB) 区切りとして読み込みます")
 
-    up_delta = st.sidebar.file_uploader("Sample 1 (Delta) - 赤", accept_multiple_files=True, key="ud")
+    # 2. スキップ行数
+    skip_row = st.sidebar.number_input("スキップ行数 (ヘッダー)", 0, value=0)
+
+    # 3. 列の割り当て
+    st.sidebar.subheader("列の割り当て (列番号: 1始まり)")
+    c1, c2, c3 = st.sidebar.columns(3)
+    col_num_x = c1.number_input("波数 (X)", min_value=1, value=1)
+    col_num_ir = c2.number_input("IR (Y2)", min_value=1, value=2)
+    col_num_vcd = c3.number_input("VCD (Y1)", min_value=1, value=3)
+
+    # 辞書化 (0-based)
+    col_indices = {
+        'x': col_num_x - 1, 
+        'ir': col_num_ir - 1, 
+        'vcd': col_num_vcd - 1
+    }
+
+    st.sidebar.markdown("---")
+    st.sidebar.header("2. データアップロード")
+
+    # ダミーデータ
+    if st.sidebar.button("ダミーデータをロード (テスト用)"):
+        dx, dir_, dvcd = generate_vcd_dummy('Delta')
+        st.session_state['delta_data'] = [{'filename': 'Dummy_Delta', 'x': dx, 'ir': dir_, 'vcd': dvcd}]
+        lx, lir, lvcd = generate_vcd_dummy('Lambda')
+        st.session_state['lambda_data'] = [{'filename': 'Dummy_Lambda', 'x': lx, 'ir': lir, 'vcd': lvcd}]
+        st.sidebar.success("ダミーデータをロードしました")
+
+    # アップローダー (type指定なしで柔軟に受け入れ、処理時にsep_charを使用)
+    up_delta = st.sidebar.file_uploader("Sample 1 (Delta) - 赤色", accept_multiple_files=True, type=['csv', 'txt', 'dat'], key="ud")
     if up_delta:
-        st.session_state['delta_data'] = [load_vcd_data(f, sep_char, skip_row) for f in up_delta if load_vcd_data(f, sep_char, skip_row)]
+        temp_list = []
+        for f in up_delta:
+            res = load_vcd_data(f, sep_char, skip_row, col_indices)
+            if res: temp_list.append(res)
+        if temp_list: st.session_state['delta_data'] = temp_list
 
-    up_lambda = st.sidebar.file_uploader("Sample 2 (Lambda) - 青", accept_multiple_files=True, key="ul")
+    up_lambda = st.sidebar.file_uploader("Sample 2 (Lambda) - 青色", accept_multiple_files=True, type=['csv', 'txt', 'dat'], key="ul")
     if up_lambda:
-        st.session_state['lambda_data'] = [load_vcd_data(f, sep_char, skip_row) for f in up_lambda if load_vcd_data(f, sep_char, skip_row)]
+        temp_list = []
+        for f in up_lambda:
+            res = load_vcd_data(f, sep_char, skip_row, col_indices)
+            if res: temp_list.append(res)
+        if temp_list: st.session_state['lambda_data'] = temp_list
 
-    # --- サイドバー: 軸設定 ---
-    st.sidebar.header("2. グラフ設定")
+    # --- サイドバー: グラフ軸設定 ---
+    st.sidebar.markdown("---")
+    st.sidebar.header("3. グラフ軸設定")
+    
     col_x1, col_x2 = st.sidebar.columns(2)
     x_high = col_x1.number_input("X High (左)", value=3000.0)
     x_low = col_x2.number_input("X Low (右)", value=800.0)
 
+    # VCD範囲
     man_vcd = st.sidebar.checkbox("VCD範囲指定 (左軸)", value=False)
     vcd_min, vcd_max = None, None
     if man_vcd:
@@ -181,6 +237,7 @@ def main():
         vcd_max = c1.number_input("VCD Max", value=0.1)
         vcd_min = c2.number_input("VCD Min", value=-0.1)
 
+    # IR範囲
     man_ir = st.sidebar.checkbox("IR範囲指定 (右軸)", value=False)
     ir_min, ir_max = None, None
     if man_ir:
@@ -188,65 +245,55 @@ def main():
         ir_max = c1.number_input("IR Max", value=1.0)
         ir_min = c2.number_input("IR Min", value=0.0)
 
-    # --- プロット作成 (Dual Axis) ---
+    # --- プロット描画 ---
     delta_data = st.session_state['delta_data']
     lambda_data = st.session_state['lambda_data']
 
     if delta_data or lambda_data:
         # 図の作成
         fig, ax1 = plt.subplots(figsize=(10, 6))
-        
-        # 右軸 (Twin Axis) の作成
-        ax2 = ax1.twinx()
+        ax2 = ax1.twinx() # 右軸
 
-        # ゼロ線 (VCD用のみ)
+        # ゼロ線
         ax1.axhline(0, color='black', linewidth=0.8, linestyle='-', zorder=1)
 
-        # プロット関数 (dry code削減)
+        # プロット関数
         def plot_item(ax_vcd, ax_ir, item, color, label_prefix):
-            # VCD (Left) -> 実線
+            # VCD (Solid line)
             ax_vcd.plot(item['x'], item['vcd'], color=color, linestyle='-', linewidth=1.5, 
                         label=f"{label_prefix} VCD", zorder=3)
-            # IR (Right) -> 点線 (やや薄く)
+            # IR (Dotted line)
             ax_ir.plot(item['x'], item['ir'], color=color, linestyle=':', linewidth=1.2, alpha=0.7, 
                        label=f"{label_prefix} IR", zorder=2)
 
         for item in delta_data:
             plot_item(ax1, ax2, item, COLOR_DELTA, "Delta")
-        
         for item in lambda_data:
             plot_item(ax1, ax2, item, COLOR_LAMBDA, "Lambda")
 
-        # --- 軸ラベル設定 ---
+        # 軸ラベル
         ax1.set_xlabel("Wavenumber ($cm^{-1}$)", fontsize=12)
-        
-        # 左軸 (VCD)
         ax1.set_ylabel("VCD Intensity", fontsize=12)
-        if man_vcd: ax1.set_ylim(vcd_min, vcd_max)
-        
-        # 右軸 (IR)
         ax2.set_ylabel("Absorbance", fontsize=12)
+
+        # 軸範囲
+        ax1.set_xlim(x_high, x_low)
+        if man_vcd: ax1.set_ylim(vcd_min, vcd_max)
         if man_ir: ax2.set_ylim(ir_min, ir_max)
 
-        # X軸範囲
-        ax1.set_xlim(x_high, x_low)
-
-        # --- 凡例の整理 ---
-        # 自動凡例だと線が多すぎるので、カスタム凡例を作る
+        # カスタム凡例
         legend_elements = [
             Line2D([0], [0], color=COLOR_DELTA, lw=2, linestyle='-', label='Sample 1 (Delta) VCD'),
             Line2D([0], [0], color=COLOR_LAMBDA, lw=2, linestyle='-', label='Sample 2 (Lambda) VCD'),
             Line2D([0], [0], color='gray', lw=1.5, linestyle=':', label='IR / Absorbance (Ref)'),
         ]
-        # グラフの邪魔にならない場所に配置
         ax1.legend(handles=legend_elements, loc='upper left', framealpha=0.9)
 
         st.pyplot(fig)
 
-        # --- ダウンロード ---
+        # ダウンロード
         st.markdown("---")
         c1, c2 = st.columns(2)
-        
         buf = io.BytesIO()
         fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
         buf.seek(0)
@@ -255,8 +302,9 @@ def main():
         zip_dat = create_gnuplot_package(delta_data, lambda_data, (x_high, x_low), (vcd_min, vcd_max), (ir_min, ir_max))
         if zip_dat:
             c2.download_button("Gnuplotデータ (.zip)", zip_dat, "vcd_dual_gnuplot.zip", "application/zip")
+            
     else:
-        st.info("データがありません")
+        st.info("👈 左側のサイドバーからデータ形式を選択し、ファイルをアップロードしてください。")
 
 if __name__ == "__main__":
     main()
