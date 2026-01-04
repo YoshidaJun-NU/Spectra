@@ -93,7 +93,7 @@ def create_gnuplot_data(data_list):
 # ---------------------------------------------------------
 def main():
     st.set_page_config(page_title="Spectra Plotter", layout="wide")
-    st.title("UV-vis Spectra Viewer & Converter")
+    st.title("Spectra Viewer (UV, 蛍光，IRなど)")
 
     if 'data_list' not in st.session_state:
         st.session_state['data_list'] = []
