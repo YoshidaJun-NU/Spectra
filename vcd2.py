@@ -42,16 +42,23 @@ def generate_vcd_dummy(isomer_type='Delta'):
     return x, y_ir, y_vcd
 
 # ---------------------------------------------------------
-# 関数: データ読み込み (列指定対応)
+# 関数: データ読み込み (フッター対応版)
 # ---------------------------------------------------------
-def load_vcd_data(uploaded_file, sep_char, skip_rows, col_indices):
+def load_vcd_data(uploaded_file, sep_char, skip_rows, skip_footer, col_indices):
     """
     col_indices: {'x': 0, 'ir': 1, 'vcd': 2} (0-based index)
+    skip_footer: 末尾から除外する行数
     """
     try:
-        # ヘッダーなしとして読み込み、スキップ行は手動指定
-        # テキスト形式の場合は sep='\t' または sep=None(自動判定) が良いが、ここではタブ指定とする
-        df = pd.read_csv(uploaded_file, sep=sep_char, skiprows=skip_rows, header=None)
+        # engine='python' は skipfooter を使うために必須
+        df = pd.read_csv(
+            uploaded_file, 
+            sep=sep_char, 
+            skiprows=skip_rows, 
+            skipfooter=skip_footer, 
+            header=None, 
+            engine='python'
+        )
         
         # 数値変換 (変換できない文字が含まれる行は削除)
         df = df.apply(pd.to_numeric, errors='coerce').dropna()
@@ -159,25 +166,24 @@ def main():
     # --- サイドバー: データ読み込み設定 ---
     st.sidebar.header("1. データ設定")
 
-    # 1. ファイル形式の選択
+    # 1. ファイル形式
     st.sidebar.subheader("入力ファイル形式")
     file_format = st.sidebar.radio(
-        "形式を選択してください:",
+        "形式を選択:",
         ["CSV形式 (.csv)", "テキスト形式 (.txt / .dat)"]
     )
-    
-    # 形式に応じた区切り文字の設定
     if "CSV" in file_format:
         sep_char = ','
-        file_types = ['csv']
-        st.sidebar.caption("※ カンマ (,) 区切りとして読み込みます")
+        st.sidebar.caption("※ カンマ (,) 区切り")
     else:
-        sep_char = '\t' # テキスト形式はタブ区切りをデフォルトとします
-        file_types = ['txt', 'dat']
-        st.sidebar.caption("※ タブ (TAB) 区切りとして読み込みます")
+        sep_char = '\t'
+        st.sidebar.caption("※ タブ (TAB) 区切り")
 
-    # 2. スキップ行数
-    skip_row = st.sidebar.number_input("スキップ行数 (ヘッダー)", 0, value=0)
+    # 2. スキップ行数 (ヘッダーとフッター)
+    st.sidebar.subheader("行スキップ設定")
+    c_skip1, c_skip2 = st.sidebar.columns(2)
+    skip_row = c_skip1.number_input("ヘッダー (先頭)", min_value=0, value=0, help="ファイルの先頭から無視する行数")
+    skip_footer = c_skip2.number_input("フッター (末尾)", min_value=0, value=0, help="ファイルの末尾にある説明書きなどを無視する行数")
 
     # 3. 列の割り当て
     st.sidebar.subheader("列の割り当て (列番号: 1始まり)")
@@ -186,7 +192,6 @@ def main():
     col_num_ir = c2.number_input("IR (Y2)", min_value=1, value=2)
     col_num_vcd = c3.number_input("VCD (Y1)", min_value=1, value=3)
 
-    # 辞書化 (0-based)
     col_indices = {
         'x': col_num_x - 1, 
         'ir': col_num_ir - 1, 
@@ -197,19 +202,20 @@ def main():
     st.sidebar.header("2. データアップロード")
 
     # ダミーデータ
-    if st.sidebar.button("ダミーデータをロード (テスト用)"):
+    if st.sidebar.button("ダミーデータをロード"):
         dx, dir_, dvcd = generate_vcd_dummy('Delta')
         st.session_state['delta_data'] = [{'filename': 'Dummy_Delta', 'x': dx, 'ir': dir_, 'vcd': dvcd}]
         lx, lir, lvcd = generate_vcd_dummy('Lambda')
         st.session_state['lambda_data'] = [{'filename': 'Dummy_Lambda', 'x': lx, 'ir': lir, 'vcd': lvcd}]
         st.sidebar.success("ダミーデータをロードしました")
 
-    # アップローダー (type指定なしで柔軟に受け入れ、処理時にsep_charを使用)
+    # アップローダー
     up_delta = st.sidebar.file_uploader("Sample 1 (Delta) - 赤色", accept_multiple_files=True, type=['csv', 'txt', 'dat'], key="ud")
     if up_delta:
         temp_list = []
         for f in up_delta:
-            res = load_vcd_data(f, sep_char, skip_row, col_indices)
+            # 引数に skip_footer を追加
+            res = load_vcd_data(f, sep_char, skip_row, skip_footer, col_indices)
             if res: temp_list.append(res)
         if temp_list: st.session_state['delta_data'] = temp_list
 
@@ -217,7 +223,7 @@ def main():
     if up_lambda:
         temp_list = []
         for f in up_lambda:
-            res = load_vcd_data(f, sep_char, skip_row, col_indices)
+            res = load_vcd_data(f, sep_char, skip_row, skip_footer, col_indices)
             if res: temp_list.append(res)
         if temp_list: st.session_state['lambda_data'] = temp_list
 
@@ -229,7 +235,6 @@ def main():
     x_high = col_x1.number_input("X High (左)", value=3000.0)
     x_low = col_x2.number_input("X Low (右)", value=800.0)
 
-    # VCD範囲
     man_vcd = st.sidebar.checkbox("VCD範囲指定 (左軸)", value=False)
     vcd_min, vcd_max = None, None
     if man_vcd:
@@ -237,7 +242,6 @@ def main():
         vcd_max = c1.number_input("VCD Max", value=0.1)
         vcd_min = c2.number_input("VCD Min", value=-0.1)
 
-    # IR範囲
     man_ir = st.sidebar.checkbox("IR範囲指定 (右軸)", value=False)
     ir_min, ir_max = None, None
     if man_ir:
@@ -254,15 +258,11 @@ def main():
         fig, ax1 = plt.subplots(figsize=(10, 6))
         ax2 = ax1.twinx() # 右軸
 
-        # ゼロ線
         ax1.axhline(0, color='black', linewidth=0.8, linestyle='-', zorder=1)
 
-        # プロット関数
         def plot_item(ax_vcd, ax_ir, item, color, label_prefix):
-            # VCD (Solid line)
             ax_vcd.plot(item['x'], item['vcd'], color=color, linestyle='-', linewidth=1.5, 
                         label=f"{label_prefix} VCD", zorder=3)
-            # IR (Dotted line)
             ax_ir.plot(item['x'], item['ir'], color=color, linestyle=':', linewidth=1.2, alpha=0.7, 
                        label=f"{label_prefix} IR", zorder=2)
 
@@ -271,17 +271,14 @@ def main():
         for item in lambda_data:
             plot_item(ax1, ax2, item, COLOR_LAMBDA, "Lambda")
 
-        # 軸ラベル
         ax1.set_xlabel("Wavenumber ($cm^{-1}$)", fontsize=12)
         ax1.set_ylabel("VCD Intensity", fontsize=12)
         ax2.set_ylabel("Absorbance", fontsize=12)
 
-        # 軸範囲
         ax1.set_xlim(x_high, x_low)
         if man_vcd: ax1.set_ylim(vcd_min, vcd_max)
         if man_ir: ax2.set_ylim(ir_min, ir_max)
 
-        # カスタム凡例
         legend_elements = [
             Line2D([0], [0], color=COLOR_DELTA, lw=2, linestyle='-', label='Sample 1 (Delta) VCD'),
             Line2D([0], [0], color=COLOR_LAMBDA, lw=2, linestyle='-', label='Sample 2 (Lambda) VCD'),
@@ -291,7 +288,6 @@ def main():
 
         st.pyplot(fig)
 
-        # ダウンロード
         st.markdown("---")
         c1, c2 = st.columns(2)
         buf = io.BytesIO()
@@ -304,7 +300,7 @@ def main():
             c2.download_button("Gnuplotデータ (.zip)", zip_dat, "vcd_dual_gnuplot.zip", "application/zip")
             
     else:
-        st.info("👈 左側のサイドバーからデータ形式を選択し、ファイルをアップロードしてください。")
+        st.info("👈 左側のサイドバーからデータ設定を行い、ファイルをアップロードしてください。")
 
 if __name__ == "__main__":
     main()
