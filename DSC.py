@@ -32,6 +32,39 @@ def detect_header_row(file_path_or_buffer, encoding):
         pass # エラー時はデフォルト0
     return header_row
 
+def load_data_robust(file_path_or_buffer, sep, header, encoding):
+    """
+    指定されたエンコーディングで読み込みを試み、失敗したらUTF-8/cp932を切り替えて再試行する関数
+    """
+    encodings_to_try = [encoding, 'utf-8', 'cp932', 'shift_jis', 'utf-8-sig']
+    # 重複を除去しつつ順序を保持
+    encodings_to_try = sorted(set(encodings_to_try), key=encodings_to_try.index)
+    
+    last_error = None
+    
+    for enc in encodings_to_try:
+        try:
+            if isinstance(file_path_or_buffer, str):
+                df = pd.read_csv(file_path_or_buffer, sep=sep, header=header, encoding=enc, engine='python')
+            else:
+                file_path_or_buffer.seek(0)
+                df = pd.read_csv(file_path_or_buffer, sep=sep, header=header, encoding=enc, engine='python')
+            
+            # 成功したら、もし設定と違うエンコーディングだったら通知する
+            if enc != encoding:
+                st.sidebar.warning(f"設定された {encoding} で読み込めなかったため、{enc} で読み込みました。")
+            
+            return df
+        except UnicodeDecodeError as e:
+            last_error = e
+            continue
+        except Exception as e:
+            # その他のエラー（パースエラーなど）はそのまま再試行せず返すか、エラーとして扱う
+            raise e
+            
+    # 全て失敗した場合
+    raise last_error
+
 # ---------------------------------------------------------
 # 設定とスタイル
 # ---------------------------------------------------------
@@ -59,8 +92,7 @@ st.sidebar.header("1. データ読み込み設定")
 uploaded_file = st.sidebar.file_uploader("ファイルを選択 (CSV or TXT)", type=['csv', 'txt'])
 
 # デモファイルの確認
-demo_file_path = "demoDSC.txt"
-use_demo = False
+demo_file_path = "demo.txt"
 target_file = None
 
 if uploaded_file is not None:
@@ -68,18 +100,17 @@ if uploaded_file is not None:
     st.sidebar.success("アップロードされたファイルを使用します。")
 elif os.path.exists(demo_file_path):
     target_file = demo_file_path
-    use_demo = True
     st.sidebar.info("デモファイル (demo.txt) を読み込んでいます。")
 else:
     st.sidebar.warning("ファイルをアップロードしてください。")
 
 if target_file:
     # --- 読み込みオプション ---
-    # エンコーディング選択 (日本語の測定データは cp932/Shift_JIS が多い)
-    encoding = st.sidebar.selectbox("文字コード", ["cp932", "utf-8", "shift_jis"], index=0)
+    # デフォルトのエンコーディング選択
+    encoding_option = st.sidebar.selectbox("優先する文字コード", ["cp932", "utf-8", "shift_jis"], index=0)
 
     # 区切り文字設定
-    delimiter = st.sidebar.radio("区切り文字", [", (CSV)", "\\t (Tab)", "Space"], index=1) # デフォルトをTabに変更
+    delimiter = st.sidebar.radio("区切り文字", [", (CSV)", "\\t (Tab)", "Space"], index=1)
     if delimiter == ", (CSV)":
         sep = ","
     elif delimiter == "\\t (Tab)":
@@ -87,9 +118,8 @@ if target_file:
     else:
         sep = r"\s+"
 
-    # ヘッダー行の自動検出と設定
-    # デフォルト値をファイルの中身から推測
-    default_header_row = detect_header_row(target_file, encoding)
+    # ヘッダー行の自動検出
+    default_header_row = detect_header_row(target_file, encoding_option)
     
     st.sidebar.subheader("ヘッダー設定")
     header_arg = st.sidebar.number_input(
@@ -103,40 +133,40 @@ if target_file:
     # データ処理
     # ---------------------------------------------------------
     try:
-        # データの読み込み
-        # uploaded_fileの場合はseek(0)が必要だがread_csvがやってくれる場合もある
-        if isinstance(target_file, str):
-            df = pd.read_csv(target_file, sep=sep, header=header_arg, encoding=encoding, engine='python')
-        else:
-            target_file.seek(0)
-            df = pd.read_csv(target_file, sep=sep, header=header_arg, encoding=encoding, engine='python')
+        # ロバストな読み込み関数を使用
+        df = load_data_robust(target_file, sep, header_arg, encoding_option)
         
         # 単位行（数値変換できない行）の削除
-        # 数値列になりそうなものを数値化してみて、失敗(NaN)したらその行を消す
         if len(df) > 0:
-             # 全ての列を数値変換トライ
             cols_to_check = df.columns
+            # 念のためコピーを作成
+            df_numeric = df.copy()
             for col in cols_to_check:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                df_numeric[col] = pd.to_numeric(df_numeric[col], errors='coerce')
             
-            # X軸Y軸候補（NaNでないデータが十分にある列）
-            df = df.dropna().reset_index(drop=True)
+            # 全ての列がNaNになるような行（ヘッダーの残りカスなど）や、
+            # 重要な列がNaNになる行を削除
+            df_numeric = df_numeric.dropna(how='all') # 全てNaNの行を削除
+            
+            # もとのdfを、数値変換できた行だけに絞る（こうすることで文字列列が消えるのを防ぐが、今回はプロット用なので数値化してしまって良い）
+            df = df_numeric.dropna().reset_index(drop=True)
 
         st.sidebar.success(f"読み込み成功: {df.shape[0]}行, {df.shape[1]}列")
         
         if df.empty:
-            st.error("有効な数値データが見つかりませんでした。ヘッダー行の設定などを確認してください。")
+            st.error("有効な数値データが見つかりませんでした。区切り文字などを確認してください。")
             st.stop()
 
         # --- 列の選択 ---
         columns = df.columns.tolist()
         st.sidebar.subheader("2. 列の選択")
         
-        # デフォルト選択の推測 ('Temp'や'DSC'などの名前があれば優先)
+        # デフォルト選択の推測
         idx_x, idx_y = 0, 1
         for i, col in enumerate(columns):
-            if "Temp" in str(col): idx_x = i
-            if "DSC" in str(col) or "Heat" in str(col): idx_y = i
+            c_str = str(col).lower()
+            if "temp" in c_str: idx_x = i
+            if "dsc" in c_str or "heat" in c_str or "mw" in c_str: idx_y = i
         
         if idx_y == idx_x and len(columns) > 1:
              idx_y = 1 if idx_x == 0 else 0
@@ -157,11 +187,8 @@ if target_file:
             value=(x_min_def, x_max_def)
         )
         
-        y_label_def = y_col
-        x_label_def = x_col
-        # ラベルに単位が含まれていればきれいにする等の処理はお好みで
-        y_label = st.sidebar.text_input("Y軸ラベル", y_label_def)
-        x_label = st.sidebar.text_input("X軸ラベル", x_label_def)
+        y_label = st.sidebar.text_input("Y軸ラベル", str(y_col))
+        x_label = st.sidebar.text_input("X軸ラベル", str(x_col))
 
         # ---------------------------------------------------------
         # メインエリア：プロット詳細設定
@@ -232,7 +259,8 @@ if target_file:
                 
                 gnuplot_script = []
                 gnuplot_script.append(f"# Generated by Streamlit DSC Plotter")
-                gnuplot_script.append(f"# Source: {uploaded_file.name if uploaded_file else 'demo.txt'}")
+                source_name = uploaded_file.name if uploaded_file else 'demo.txt'
+                gnuplot_script.append(f"# Source: {source_name}")
                 gnuplot_script.append(f"set terminal pngcairo size 800,600 enhanced font 'Arial,12'")
                 gnuplot_script.append(f"set output 'graph.png'")
                 gnuplot_script.append(f"set border 15 linewidth 1.5")
@@ -269,11 +297,11 @@ if target_file:
                         mime="text/plain"
                     )
             else:
-                st.warning("表示できるデータがありません。行の範囲指定などを確認してください。")
+                st.warning("表示できるデータがありません。")
 
     except Exception as e:
         st.error(f"エラーが発生しました: {e}")
-        st.info("区切り文字、ヘッダー行、文字コード設定を確認してください。")
+        st.info("設定を確認してください。")
 
 else:
     st.info("ファイルをアップロードするか、demo.txtを配置してください。")
