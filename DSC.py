@@ -1,7 +1,36 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import io
+import os
+
+# ---------------------------------------------------------
+# 関数定義: ヘッダー位置の自動検出
+# ---------------------------------------------------------
+def detect_header_row(file_path_or_buffer, encoding):
+    """
+    ファイル内の '[Data]' という行を探し、その次の行をヘッダー行として返す。
+    見つからない場合は 0 を返す。
+    """
+    header_row = 0
+    try:
+        # ファイルパスの場合
+        if isinstance(file_path_or_buffer, str):
+            with open(file_path_or_buffer, 'r', encoding=encoding, errors='ignore') as f:
+                lines = f.readlines()
+        # アップロードされたファイル(BytesIO)の場合
+        else:
+            file_path_or_buffer.seek(0)
+            content = file_path_or_buffer.read().decode(encoding, errors='ignore')
+            lines = content.splitlines()
+            file_path_or_buffer.seek(0) # リセット
+
+        for i, line in enumerate(lines):
+            if '[Data]' in line:
+                header_row = i + 1
+                break
+    except Exception:
+        pass # エラー時はデフォルト0
+    return header_row
 
 # ---------------------------------------------------------
 # 設定とスタイル
@@ -11,10 +40,10 @@ st.set_page_config(page_title="DSC Style Plotter", layout="wide")
 st.title("Scientific Graph Plotter (DSC Style)")
 st.markdown("""
 CSVやTXTデータを読み込み、行範囲を指定して複数の曲線をプロットします。
-作成したグラフはGnuplot形式でダウンロード可能。
+ファイルがアップロードされていない場合は、デモデータ(`demo.txt`)を表示します。
 """)
 
-# Matplotlibのスタイル設定（論文調のきれいなグラフにする）
+# Matplotlibのスタイル設定
 plt.rcParams['xtick.direction'] = 'in'
 plt.rcParams['ytick.direction'] = 'in'
 plt.rcParams['xtick.top'] = True
@@ -22,33 +51,102 @@ plt.rcParams['ytick.right'] = True
 plt.rcParams['font.size'] = 12
 
 # ---------------------------------------------------------
-# サイドバー：データ読み込み
+# サイドバー：データ読み込み設定
 # ---------------------------------------------------------
-st.sidebar.header("1. データ読み込み")
+st.sidebar.header("1. データ読み込み設定")
+
+# ファイルアップロード
 uploaded_file = st.sidebar.file_uploader("ファイルを選択 (CSV or TXT)", type=['csv', 'txt'])
 
-delimiter = st.sidebar.radio("区切り文字を選択", [", (CSV)", "\\t (Tab)", "Space"], index=0)
-if delimiter == ", (CSV)":
-    sep = ","
-elif delimiter == "\\t (Tab)":
-    sep = "\t"
-else:
-    sep = r"\s+"
+# デモファイルの確認
+demo_file_path = "demo.txt"
+use_demo = False
+target_file = None
 
 if uploaded_file is not None:
+    target_file = uploaded_file
+    st.sidebar.success("アップロードされたファイルを使用します。")
+elif os.path.exists(demo_file_path):
+    target_file = demo_file_path
+    use_demo = True
+    st.sidebar.info("デモファイル (demo.txt) を読み込んでいます。")
+else:
+    st.sidebar.warning("ファイルをアップロードしてください。")
+
+if target_file:
+    # --- 読み込みオプション ---
+    # エンコーディング選択 (日本語の測定データは cp932/Shift_JIS が多い)
+    encoding = st.sidebar.selectbox("文字コード", ["cp932", "utf-8", "shift_jis"], index=0)
+
+    # 区切り文字設定
+    delimiter = st.sidebar.radio("区切り文字", [", (CSV)", "\\t (Tab)", "Space"], index=1) # デフォルトをTabに変更
+    if delimiter == ", (CSV)":
+        sep = ","
+    elif delimiter == "\\t (Tab)":
+        sep = "\t"
+    else:
+        sep = r"\s+"
+
+    # ヘッダー行の自動検出と設定
+    # デフォルト値をファイルの中身から推測
+    default_header_row = detect_header_row(target_file, encoding)
+    
+    st.sidebar.subheader("ヘッダー設定")
+    header_arg = st.sidebar.number_input(
+        "ヘッダー(列名)がある行番号", 
+        min_value=0, 
+        value=default_header_row, 
+        help="指定した行番号より前の行は無視されます。自動検出された場合は自動入力されます。"
+    )
+
+    # ---------------------------------------------------------
+    # データ処理
+    # ---------------------------------------------------------
     try:
         # データの読み込み
-        df = pd.read_csv(uploaded_file, sep=sep, engine='python')
+        # uploaded_fileの場合はseek(0)が必要だがread_csvがやってくれる場合もある
+        if isinstance(target_file, str):
+            df = pd.read_csv(target_file, sep=sep, header=header_arg, encoding=encoding, engine='python')
+        else:
+            target_file.seek(0)
+            df = pd.read_csv(target_file, sep=sep, header=header_arg, encoding=encoding, engine='python')
+        
+        # 単位行（数値変換できない行）の削除
+        # 数値列になりそうなものを数値化してみて、失敗(NaN)したらその行を消す
+        if len(df) > 0:
+             # 全ての列を数値変換トライ
+            cols_to_check = df.columns
+            for col in cols_to_check:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # X軸Y軸候補（NaNでないデータが十分にある列）
+            df = df.dropna().reset_index(drop=True)
+
         st.sidebar.success(f"読み込み成功: {df.shape[0]}行, {df.shape[1]}列")
         
-        # 列の選択
+        if df.empty:
+            st.error("有効な数値データが見つかりませんでした。ヘッダー行の設定などを確認してください。")
+            st.stop()
+
+        # --- 列の選択 ---
         columns = df.columns.tolist()
         st.sidebar.subheader("2. 列の選択")
-        x_col = st.sidebar.selectbox("X軸のデータ列", columns, index=0)
-        y_col = st.sidebar.selectbox("Y軸のデータ列", columns, index=1 if len(columns) > 1 else 0)
+        
+        # デフォルト選択の推測 ('Temp'や'DSC'などの名前があれば優先)
+        idx_x, idx_y = 0, 1
+        for i, col in enumerate(columns):
+            if "Temp" in str(col): idx_x = i
+            if "DSC" in str(col) or "Heat" in str(col): idx_y = i
+        
+        if idx_y == idx_x and len(columns) > 1:
+             idx_y = 1 if idx_x == 0 else 0
 
-        # 全体の設定
+        x_col = st.sidebar.selectbox("X軸のデータ列", columns, index=idx_x)
+        y_col = st.sidebar.selectbox("Y軸のデータ列", columns, index=idx_y)
+
+        # --- グラフ全体の設定 ---
         st.sidebar.subheader("グラフ全体の設定")
+        
         x_min_def = float(df[x_col].min())
         x_max_def = float(df[x_col].max())
         
@@ -59,46 +157,39 @@ if uploaded_file is not None:
             value=(x_min_def, x_max_def)
         )
         
-        y_label = st.sidebar.text_input("Y軸ラベル", "Heat Flow / mW")
-        x_label = st.sidebar.text_input("X軸ラベル", "Temperature / °C")
+        y_label_def = y_col
+        x_label_def = x_col
+        # ラベルに単位が含まれていればきれいにする等の処理はお好みで
+        y_label = st.sidebar.text_input("Y軸ラベル", y_label_def)
+        x_label = st.sidebar.text_input("X軸ラベル", x_label_def)
 
         # ---------------------------------------------------------
-        # メインエリア：プロット設定
+        # メインエリア：プロット詳細設定
         # ---------------------------------------------------------
         col_main, col_plot = st.columns([1, 2])
 
         with col_main:
             st.subheader("プロット設定")
-            num_plots = st.number_input("プロットする曲線の数 (最大10)", min_value=1, max_value=10, value=2)
+            num_plots = st.number_input("プロットする曲線の数", min_value=1, max_value=10, value=2)
 
             plot_configs = []
 
             for i in range(num_plots):
                 with st.expander(f"曲線 {i+1} の設定", expanded=(i < 2)):
-                    # デフォルト値の設定ロジック
-                    default_color = "#FF0000" # 赤
-                    if i == 1:
-                        default_color = "#0000FF" # 青
+                    default_color = "#FF0000" if i % 2 == 0 else "#0000FF"
+                    if i >= 2: default_color = "#000000"
                     
-                    # 行範囲のデフォルト
-                    total_rows = len(df)
-                    start_def = 0
-                    end_def = total_rows
-                    
-                    # オフセットのデフォルト（3つ目以降は少しずらす提案）
                     offset_def = 0.0
-                    if i >= 2:
-                        offset_def = -1.0 * (i - 1) # 適当な初期値
+                    if i >= 2: offset_def = -0.5 * (i - 1)
 
                     c1, c2 = st.columns(2)
-                    start_row = c1.number_input(f"開始行 (No.{i+1})", 0, total_rows, start_def, key=f"s_{i}")
-                    end_row = c2.number_input(f"終了行 (No.{i+1})", 0, total_rows, end_def, key=f"e_{i}")
+                    start_row = c1.number_input(f"開始行 (No.{i+1})", 0, len(df), 0, key=f"s_{i}")
+                    end_row = c2.number_input(f"終了行 (No.{i+1})", 0, len(df), len(df), key=f"e_{i}")
                     
                     c3, c4 = st.columns(2)
                     color = c3.color_picker(f"色 (No.{i+1})", default_color, key=f"c_{i}")
                     offset = c4.number_input(f"Y軸オフセット (No.{i+1})", value=offset_def, step=0.1, format="%.2f", key=f"o_{i}")
 
-                    # 設定を保存
                     plot_configs.append({
                         "label": f"Plot {i+1}",
                         "start": start_row,
@@ -114,10 +205,8 @@ if uploaded_file is not None:
             st.subheader("プレビュー")
             fig, ax = plt.subplots(figsize=(8, 6))
 
-            # プロットループ
+            has_data = False
             for config in plot_configs:
-                # データのスライス
-                # ユーザー入力は行番号（0始まり）を想定
                 subset = df.iloc[config["start"]:config["end"]]
                 
                 if not subset.empty:
@@ -127,68 +216,64 @@ if uploaded_file is not None:
                         color=config["color"], 
                         label=config["label"]
                     )
+                    has_data = True
 
-            # グラフの体裁
             ax.set_xlim(x_range)
             ax.set_xlabel(x_label)
             ax.set_ylabel(y_label)
             
-            # 凡例は邪魔なら消せるようにしても良いが、一旦非表示またはシンプルに
-            # ax.legend(frameon=False) 
-            
-            st.pyplot(fig)
+            if has_data:
+                st.pyplot(fig)
 
-            # ---------------------------------------------------------
-            # Gnuplotスクリプト生成
-            # ---------------------------------------------------------
-            st.subheader("ダウンロード")
-            
-            # Gnuplotスクリプトの作成（データを埋め込む形式 "inline data"）
-            gnuplot_script = []
-            gnuplot_script.append(f"# Generated by Streamlit DSC Plotter")
-            gnuplot_script.append(f"set terminal pngcairo size 800,600 enhanced font 'Arial,12'")
-            gnuplot_script.append(f"set output 'graph.png'")
-            gnuplot_script.append(f"set border 15 linewidth 1.5") # 枠線
-            gnuplot_script.append(f"set tics scale 1.5") # 目盛りの長さ
-            gnuplot_script.append(f"set xtics out nomirror") # もしくは in
-            gnuplot_script.append(f"set ytics out nomirror") 
-            gnuplot_script.append(f"set xlabel '{x_label}'")
-            gnuplot_script.append(f"set ylabel '{y_label}'")
-            gnuplot_script.append(f"set xrange [{x_range[0]}:{x_range[1]}]")
-            
-            # plotコマンドの構築
-            plot_cmds = []
-            for i, config in enumerate(plot_configs):
-                # hexカラーをgnuplotの形式に
-                c = config['color']
-                title = config['label']
-                # inline data '-' を使用
-                plot_cmds.append(f"'-' using 1:2 with lines lc rgb '{c}' title '{title}' lw 2")
-            
-            gnuplot_script.append("plot " + ", \\\n     ".join(plot_cmds))
-            
-            # データブロックの追記
-            for config in plot_configs:
-                subset = df.iloc[config["start"]:config["end"]]
-                # Xと (Y + Offset) を書き出す
-                for _, row in subset.iterrows():
-                    val_x = row[x_col]
-                    val_y = row[y_col] + config["offset"]
-                    gnuplot_script.append(f"{val_x} {val_y}")
-                gnuplot_script.append("e") # エンドマーカー
+                # ---------------------------------------------------------
+                # Gnuplotスクリプト生成
+                # ---------------------------------------------------------
+                st.subheader("ダウンロード")
+                
+                gnuplot_script = []
+                gnuplot_script.append(f"# Generated by Streamlit DSC Plotter")
+                gnuplot_script.append(f"# Source: {uploaded_file.name if uploaded_file else 'demo.txt'}")
+                gnuplot_script.append(f"set terminal pngcairo size 800,600 enhanced font 'Arial,12'")
+                gnuplot_script.append(f"set output 'graph.png'")
+                gnuplot_script.append(f"set border 15 linewidth 1.5")
+                gnuplot_script.append(f"set tics scale 1.5")
+                gnuplot_script.append(f"set xtics out nomirror")
+                gnuplot_script.append(f"set ytics out nomirror")
+                gnuplot_script.append(f"set xlabel '{x_label}'")
+                gnuplot_script.append(f"set ylabel '{y_label}'")
+                gnuplot_script.append(f"set xrange [{x_range[0]}:{x_range[1]}]")
+                
+                plot_cmds = []
+                for i, config in enumerate(plot_configs):
+                    c = config['color']
+                    title = config['label']
+                    plot_cmds.append(f"'-' using 1:2 with lines lc rgb '{c}' title '{title}' lw 2")
+                
+                if plot_cmds:
+                    gnuplot_script.append("plot " + ", \\\n     ".join(plot_cmds))
+                    
+                    for config in plot_configs:
+                        subset = df.iloc[config["start"]:config["end"]]
+                        for _, row in subset.iterrows():
+                            val_x = row[x_col]
+                            val_y = row[y_col] + config["offset"]
+                            gnuplot_script.append(f"{val_x} {val_y}")
+                        gnuplot_script.append("e")
 
-            final_script = "\n".join(gnuplot_script)
-            
-            st.download_button(
-                label="Gnuplotスクリプト(.plt)をダウンロード",
-                data=final_script,
-                file_name="plot_script.plt",
-                mime="text/plain"
-            )
+                    final_script = "\n".join(gnuplot_script)
+                    
+                    st.download_button(
+                        label="Gnuplotスクリプト(.plt)をダウンロード",
+                        data=final_script,
+                        file_name="plot_script.plt",
+                        mime="text/plain"
+                    )
+            else:
+                st.warning("表示できるデータがありません。行の範囲指定などを確認してください。")
 
     except Exception as e:
         st.error(f"エラーが発生しました: {e}")
-        st.info("データ形式を確認してください。数値データが含まれている必要があります。")
+        st.info("区切り文字、ヘッダー行、文字コード設定を確認してください。")
 
 else:
-    st.info("サイドバーからファイルをアップロードしてください。")
+    st.info("ファイルをアップロードするか、demo.txtを配置してください。")
