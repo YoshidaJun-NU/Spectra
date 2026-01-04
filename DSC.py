@@ -59,7 +59,7 @@ st.sidebar.header("1. データ読み込み設定")
 uploaded_file = st.sidebar.file_uploader("ファイルを選択 (CSV or TXT)", type=['csv', 'txt'])
 
 # デモファイルの確認
-demo_file_path = "demo.txt"
+demo_file_path = "demoDSC.txt"
 use_demo = False
 target_file = None
 
