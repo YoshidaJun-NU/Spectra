@@ -66,7 +66,7 @@ st.set_page_config(page_title="DSC Style Plotter", layout="wide")
 st.title("Scientific Graph Plotter (DSC)")
 st.markdown(f"""
 ### 使い方
-1. ファイルをアップロード（またはデフォルトの `{DEFAULT_FILE_NAME}` を使用）
+1. ファイルをアップロード（またはデフォルトの `demoDSC.txt` を使用）
 2. 複数回のscanファイルを分割してプロット可能。(heating, coolingに分けるなど)
 3. プロット数は最大10個まで設定可能
 4. Gnuplot用のスクリプトをダウンロード可能
