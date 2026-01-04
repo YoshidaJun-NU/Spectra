@@ -42,12 +42,11 @@ def generate_vcd_dummy(isomer_type='Delta'):
     return x, y_ir, y_vcd
 
 # ---------------------------------------------------------
-# 関数: データ読み込み (フッター対応版)
+# 関数: データ読み込み (エンコーディング対応版)
 # ---------------------------------------------------------
-def load_vcd_data(uploaded_file, sep_char, skip_rows, skip_footer, col_indices):
+def load_vcd_data(uploaded_file, sep_char, skip_rows, skip_footer, col_indices, encoding_type):
     """
-    col_indices: {'x': 0, 'ir': 1, 'vcd': 2} (0-based index)
-    skip_footer: 末尾から除外する行数
+    encoding_type: 'utf-8' or 'shift_jis' etc.
     """
     try:
         # engine='python' は skipfooter を使うために必須
@@ -57,7 +56,8 @@ def load_vcd_data(uploaded_file, sep_char, skip_rows, skip_footer, col_indices):
             skiprows=skip_rows, 
             skipfooter=skip_footer, 
             header=None, 
-            engine='python'
+            engine='python',
+            encoding=encoding_type # エンコーディングを指定
         )
         
         # 数値変換 (変換できない文字が含まれる行は削除)
@@ -77,11 +77,11 @@ def load_vcd_data(uploaded_file, sep_char, skip_rows, skip_footer, col_indices):
         return {'filename': uploaded_file.name, 'x': x, 'ir': ir, 'vcd': vcd}
 
     except Exception as e:
-        st.error(f"読み込みエラー: {uploaded_file.name}\n{e}")
+        st.error(f"読み込みエラー: {uploaded_file.name}\n{e}\n\n※ 文字コードを 'Shift-JIS' に変更して試してください。")
         return None
 
 # ---------------------------------------------------------
-# 関数: Gnuplotパッケージ作成 (2軸対応)
+# 関数: Gnuplotパッケージ作成
 # ---------------------------------------------------------
 def create_gnuplot_package(delta_list, lambda_list, x_lim, vcd_lim, ir_lim):
     all_x = []
@@ -112,15 +112,13 @@ def create_gnuplot_package(delta_list, lambda_list, x_lim, vcd_lim, ir_lim):
 
     data_str = df_out.to_csv(sep='\t', index=False, float_format='%.5f')
 
-    # Gnuplot Script (Dual Axis)
+    # Gnuplot Script
     plot_cmds = []
     curr = 2
     for item in col_names:
         c = COLOR_DELTA if item['type'] == 'Delta' else COLOR_LAMBDA
         t = item['label'].replace('_', '\\_')
-        # IR: Right Axis (y2), Dotted
         plot_cmds.append(f"'data.dat' u 1:{curr} axes x1y2 w l lc rgb '{c}' dt 2 notitle") 
-        # VCD: Left Axis (y1), Solid
         plot_cmds.append(f"'data.dat' u 1:{curr+1} axes x1y1 w l lc rgb '{c}' dt 1 title '{t} ({item['type']})'")
         curr += 2
 
@@ -166,10 +164,12 @@ def main():
     # --- サイドバー: データ読み込み設定 ---
     st.sidebar.header("1. データ設定")
 
-    # 1. ファイル形式
-    st.sidebar.subheader("入力ファイル形式")
+    # 1. ファイル形式と文字コード
+    st.sidebar.subheader("ファイル形式・文字コード")
+    
+    # 形式選択
     file_format = st.sidebar.radio(
-        "形式を選択:",
+        "ファイル拡張子:",
         ["CSV形式 (.csv)", "テキスト形式 (.txt / .dat)"]
     )
     if "CSV" in file_format:
@@ -179,7 +179,14 @@ def main():
         sep_char = '\t'
         st.sidebar.caption("※ タブ (TAB) 区切り")
 
-    # 2. スキップ行数 (ヘッダーとフッター)
+    # 文字コード選択（追加！）
+    encoding_label = st.sidebar.radio(
+        "文字コード (エラーが出る場合に変更):",
+        ["UTF-8 (デフォルト)", "Shift-JIS (日本語Windows)"]
+    )
+    encoding_type = 'utf-8' if "UTF-8" in encoding_label else 'shift_jis'
+
+    # 2. スキップ行数
     st.sidebar.subheader("行スキップ設定")
     c_skip1, c_skip2 = st.sidebar.columns(2)
     skip_row = c_skip1.number_input("ヘッダー (先頭)", min_value=0, value=0, help="ファイルの先頭から無視する行数")
@@ -214,8 +221,7 @@ def main():
     if up_delta:
         temp_list = []
         for f in up_delta:
-            # 引数に skip_footer を追加
-            res = load_vcd_data(f, sep_char, skip_row, skip_footer, col_indices)
+            res = load_vcd_data(f, sep_char, skip_row, skip_footer, col_indices, encoding_type)
             if res: temp_list.append(res)
         if temp_list: st.session_state['delta_data'] = temp_list
 
@@ -223,7 +229,7 @@ def main():
     if up_lambda:
         temp_list = []
         for f in up_lambda:
-            res = load_vcd_data(f, sep_char, skip_row, skip_footer, col_indices)
+            res = load_vcd_data(f, sep_char, skip_row, skip_footer, col_indices, encoding_type)
             if res: temp_list.append(res)
         if temp_list: st.session_state['lambda_data'] = temp_list
 
@@ -254,7 +260,6 @@ def main():
     lambda_data = st.session_state['lambda_data']
 
     if delta_data or lambda_data:
-        # 図の作成
         fig, ax1 = plt.subplots(figsize=(10, 6))
         ax2 = ax1.twinx() # 右軸
 
@@ -300,7 +305,7 @@ def main():
             c2.download_button("Gnuplotデータ (.zip)", zip_dat, "vcd_dual_gnuplot.zip", "application/zip")
             
     else:
-        st.info("👈 左側のサイドバーからデータ設定を行い、ファイルをアップロードしてください。")
+        st.info("👈 サイドバーで文字コードを「Shift-JIS」にしてからファイルを読み込んでください。")
 
 if __name__ == "__main__":
     main()
