@@ -11,7 +11,7 @@ st.set_page_config(page_title="DSC Style Plotter", layout="wide")
 st.title("Scientific Graph Plotter (DSC Style)")
 st.markdown("""
 CSVやTXTデータを読み込み、行範囲を指定して複数の曲線をプロットします。
-作成したグラフはGnuplot形式でダウンロード可能です。
+作成したグラフはGnuplot形式でダウンロード可能。
 """)
 
 # Matplotlibのスタイル設定（論文調のきれいなグラフにする）
