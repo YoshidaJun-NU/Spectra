@@ -3,11 +3,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import io
-import re
 
 # ページ設定
-st.set_page_config(page_title="TG/DTA Pro (Derivatives)", layout="wide")
-st.title("📈 TG/DTA 解析")
+st.set_page_config(page_title="TG/DTA Pro (Legend Control)", layout="wide")
+st.title("📈 TG/DTA 解析ツール Pro (凡例位置調整版)")
 
 # --- 関数: 高度なデータ読み込みロジック (Rigaku対応) ---
 def load_data_enhanced(file_obj, col_indices, manual_skip=None):
@@ -136,8 +135,7 @@ if uploaded_files:
             else:
                 tg_percent = tg_raw
 
-            # 微分計算 (DTG, DDTA)
-            # DTGの単位: %/deg (または %/min ※横軸が温度なので傾きは %/deg)
+            # 微分計算
             dtg = np.gradient(tg_percent, temp)
             ddta = np.gradient(dta, temp)
             
@@ -198,39 +196,35 @@ if data_store:
 # --- 4. プロット ---
 if data_store:
     st.header("🎨 グラフ")
-    st.markdown("各ファイルの「DTG (TG微分)」や「DDTA (DTA微分)」を選択して表示できます。")
-    
     c_set, c_plt = st.columns([1, 2.5])
     plots = []
     
     with c_set:
         st.subheader("表示設定")
+        
+        # --- 凡例設定 (NEW) ---
+        legend_pos = st.radio("凡例 (Legend) の位置", ["内部 (自動配置)", "外側 (右)"], index=1)
+        st.markdown("---")
+
         for name in data_store.keys():
             st.markdown(f"**{name}**")
             
-            # デフォルトでTGとDTA(補正)を選択
             def_items = ["TG", "DTA (Corrected)"] if use_correction else ["TG", "DTA"]
-            
-            # 選択肢に DTG, DDTA を追加
             opts = ["TG", "DTA", "DTA (Corrected)", "DTG", "DDTA"]
             sels = st.multiselect(f"項目 ({name})", opts, default=def_items, key=f"ms_{name}")
             
             for item in sels:
                 with st.expander(f"{item} 詳細"):
-                    # デフォルト色の定義
                     col_def = "#1f77b4"
                     if "DTA" in item: col_def = "#ff7f0e"
-                    elif "DTG" in item: col_def = "#2ca02c" # Green
-                    elif "DDTA" in item: col_def = "#d62728" # Red
+                    elif "DTG" in item: col_def = "#2ca02c"
+                    elif "DDTA" in item: col_def = "#d62728"
                     
                     c = st.color_picker("色", col_def, key=f"c_{name}_{item}")
                     ls = st.selectbox("線種", ["-", "--", "-.", ":"], key=f"ls_{name}_{item}")
                     lw = st.slider("太さ", 0.5, 4.0, 1.5, key=f"lw_{name}_{item}")
                     
-                    # 軸のデフォルト設定 (TG以外は右軸に寄せると見やすい)
-                    # TG: Left(0), Others: Right(1)
                     default_axis = 0 if item == "TG" else 1
-                    
                     ax = st.radio("軸", ["左(TG %)", "右(微小/DTA)"], index=default_axis, key=f"ax_{name}_{item}")
                     plots.append({"name": name, "type": item, "c": c, "ls": ls, "lw": lw, "ax": 0 if "左" in ax else 1})
 
@@ -250,18 +244,26 @@ if data_store:
             
         ax1.set_xlabel("Temperature (°C)")
         
-        # 軸ラベルの調整
-        ylabel_left = "Weight (%)"
-        ylabel_right = "DTA / Derivative"
-        
-        if has_left: ax1.set_ylabel(ylabel_left)
-        if has_right: ax2.set_ylabel(ylabel_right)
+        if has_left: ax1.set_ylabel("Weight (%)")
+        if has_right: ax2.set_ylabel("DTA / Derivative")
         
         ax1.grid(True, ls=':', alpha=0.6)
         
+        # --- 凡例描画ロジック ---
         h1, l1 = ax1.get_legend_handles_labels()
         h2, l2 = ax2.get_legend_handles_labels()
-        if h1 or h2: ax1.legend(h1+h2, l1+l2, loc='best')
+        
+        if h1 or h2:
+            handles = h1 + h2
+            labels = l1 + l2
+            
+            if legend_pos == "内部 (自動配置)":
+                # Matplotlibに最適な位置を判断させる
+                ax1.legend(handles, labels, loc='best')
+            else:
+                # グラフの外側（右）に配置
+                ax1.legend(handles, labels, loc='upper left', bbox_to_anchor=(1.15, 1.0))
+
         st.pyplot(fig)
 
     # --- 5. 保存 ---
@@ -288,7 +290,11 @@ if data_store:
         m_df = pd.concat([m_df, _d], axis=1) if not m_df.empty else _d
         
     csv_txt = m_df.to_csv(index=False, sep='\t')
-    gp = "set term pngcairo enhanced font 'Arial,12'\nset out 'plot.png'\nset xlabel 'Temp (C)'\nset ylabel 'Weight %'\nset y2label 'DTA / Derivative'\nset y2tics\nset grid\nset key outside\nplot "
+    
+    # Gnuplotの凡例設定
+    gp_key = "set key best" if "内部" in legend_pos else "set key outside right top"
+    
+    gp = f"set term pngcairo enhanced font 'Arial,12'\nset out 'plot.png'\nset xlabel 'Temp (C)'\nset ylabel 'Weight %'\nset y2label 'DTA / Derivative'\nset y2tics\nset grid\n{gp_key}\nplot "
     g_cmds = []
     for p in plots:
         try:
