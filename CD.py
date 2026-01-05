@@ -80,8 +80,8 @@ def main():
         st.sidebar.success("サンプルデータを生成しました")
 
     st.sidebar.markdown("---")
-    separator = st.sidebar.radio("区切り文字", ('comma', 'tab'), format_func=lambda x: "カンマ (CSV)" if x=='comma' else "タブ (TXT)")
-    skip_rows = st.sidebar.number_input("スキップ行数", value=0, min_value=0)
+    separator = st.sidebar.radio("区切り文字", ('comma', 'tab'), format_func=lambda x: "タブ (TXT)" if x=='tab' else "カンマ (CSV)")
+    skip_rows = st.sidebar.number_input("スキップ行数", value=19, min_value=0)
     has_header = st.sidebar.checkbox("ヘッダーあり", value=True)
     
     uploaded_files = st.sidebar.file_uploader("ファイルをアップロード", accept_multiple_files=True)
