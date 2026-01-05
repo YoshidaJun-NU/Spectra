@@ -6,8 +6,8 @@ import io
 import re
 
 # ページ設定
-st.set_page_config(page_title="TG/DTA Pro (Weight%)", layout="wide")
-st.title("📈 TG/DTA 解析ツール Pro (Weight% 自動変換版)")
+st.set_page_config(page_title="TG/DTA Pro (Derivatives)", layout="wide")
+st.title("📈 TG/DTA 解析ツール Pro (微分表示対応版)")
 
 # --- 関数: 高度なデータ読み込みロジック (Rigaku対応) ---
 def load_data_enhanced(file_obj, col_indices, manual_skip=None):
@@ -111,7 +111,7 @@ if uploaded_files:
                 continue
 
             temp = pd.to_numeric(df.iloc[:, col_temp], errors='coerce').values
-            tg_raw = pd.to_numeric(df.iloc[:, col_tg], errors='coerce').values # 生データ(mg)
+            tg_raw = pd.to_numeric(df.iloc[:, col_tg], errors='coerce').values
             dta = pd.to_numeric(df.iloc[:, col_dta], errors='coerce').values
             
             # NaN除去
@@ -123,28 +123,28 @@ if uploaded_files:
             if len(temp) == 0:
                 continue
 
-            # 温度順にソート
+            # ソート
             sort_idx = np.argsort(temp)
             temp = temp[sort_idx]
             tg_raw = tg_raw[sort_idx]
             dta = dta[sort_idx]
 
-            # --- Weight % への変換処理 ---
-            # 最も低温（ソート済みの先頭）を100%とする
+            # Weight % 変換
             initial_weight = tg_raw[0]
             if initial_weight != 0:
                 tg_percent = (tg_raw / initial_weight) * 100.0
             else:
-                tg_percent = tg_raw # 0割回避（そのまま）
+                tg_percent = tg_raw
 
-            # 微分計算 (Weight%ベース)
+            # 微分計算 (DTG, DDTA)
+            # DTGの単位: %/deg (または %/min ※横軸が温度なので傾きは %/deg)
             dtg = np.gradient(tg_percent, temp)
             ddta = np.gradient(dta, temp)
             
             data_store[uploaded_file.name] = {
                 "Temp": temp, 
-                "TG": tg_percent,       # 変換後の%データを使用
-                "TG_raw": tg_raw,       # 必要なら生データも保持
+                "TG": tg_percent, 
+                "TG_raw": tg_raw,
                 "DTA": dta, 
                 "DTG": dtg, 
                 "DDTA": ddta, 
@@ -175,11 +175,9 @@ if data_store:
                     baseline = m * t + c
                     data_store[name]["DTA (Corrected)"] = d - baseline
 
-# --- 3. 重量減少量 (%) ---
+# --- 3. 重量減少量 ---
 if data_store:
     st.header("📊 重量減少率 (Delta Weight %)")
-    st.info("※ 自動的にWeight%に変換された値で計算します")
-    
     with st.expander("計算パネル"):
         c1, c2 = st.columns(2)
         wt1 = c1.number_input("開始温度 T1", value=100.0)
@@ -187,7 +185,6 @@ if data_store:
         
         res = []
         for name, data in data_store.items():
-            # すでにTGは%になっている
             w1 = np.interp(wt1, data["Temp"], data["TG"])
             w2 = np.interp(wt2, data["Temp"], data["TG"])
             res.append({
@@ -201,6 +198,8 @@ if data_store:
 # --- 4. プロット ---
 if data_store:
     st.header("🎨 グラフ")
+    st.markdown("各ファイルの「DTG (TG微分)」や「DDTA (DTA微分)」を選択して表示できます。")
+    
     c_set, c_plt = st.columns([1, 2.5])
     plots = []
     
@@ -208,19 +207,31 @@ if data_store:
         st.subheader("表示設定")
         for name in data_store.keys():
             st.markdown(f"**{name}**")
+            
+            # デフォルトでTGとDTA(補正)を選択
             def_items = ["TG", "DTA (Corrected)"] if use_correction else ["TG", "DTA"]
-            sels = st.multiselect(f"項目 ({name})", ["TG", "DTA", "DTA (Corrected)", "DTG", "DDTA"], default=def_items, key=f"ms_{name}")
+            
+            # 選択肢に DTG, DDTA を追加
+            opts = ["TG", "DTA", "DTA (Corrected)", "DTG", "DDTA"]
+            sels = st.multiselect(f"項目 ({name})", opts, default=def_items, key=f"ms_{name}")
             
             for item in sels:
                 with st.expander(f"{item} 詳細"):
+                    # デフォルト色の定義
                     col_def = "#1f77b4"
                     if "DTA" in item: col_def = "#ff7f0e"
-                    elif "DTG" in item: col_def = "#2ca02c"
+                    elif "DTG" in item: col_def = "#2ca02c" # Green
+                    elif "DDTA" in item: col_def = "#d62728" # Red
                     
                     c = st.color_picker("色", col_def, key=f"c_{name}_{item}")
                     ls = st.selectbox("線種", ["-", "--", "-.", ":"], key=f"ls_{name}_{item}")
                     lw = st.slider("太さ", 0.5, 4.0, 1.5, key=f"lw_{name}_{item}")
-                    ax = st.radio("軸", ["左(TG %)", "右(DTA)"], index=1 if "DTA" in item else 0, key=f"ax_{name}_{item}")
+                    
+                    # 軸のデフォルト設定 (TG以外は右軸に寄せると見やすい)
+                    # TG: Left(0), Others: Right(1)
+                    default_axis = 0 if item == "TG" else 1
+                    
+                    ax = st.radio("軸", ["左(TG %)", "右(微小/DTA)"], index=default_axis, key=f"ax_{name}_{item}")
                     plots.append({"name": name, "type": item, "c": c, "ls": ls, "lw": lw, "ax": 0 if "左" in ax else 1})
 
     with c_plt:
@@ -228,13 +239,24 @@ if data_store:
         ax2 = ax1.twinx()
         axs = [ax1, ax2]
         
+        has_left = False
+        has_right = False
+        
         for p in plots:
             d = data_store[p["name"]]
             axs[p["ax"]].plot(d["Temp"], d[p["type"]], label=f"{p['name']} {p['type']}", color=p["c"], ls=p["ls"], lw=p["lw"])
+            if p["ax"] == 0: has_left = True
+            if p["ax"] == 1: has_right = True
             
         ax1.set_xlabel("Temperature (°C)")
-        ax1.set_ylabel("Weight (%) / DTG")  # ラベル変更
-        ax2.set_ylabel("DTA (uV) / DDTA")
+        
+        # 軸ラベルの調整
+        ylabel_left = "Weight (%)"
+        ylabel_right = "DTA / Derivative"
+        
+        if has_left: ax1.set_ylabel(ylabel_left)
+        if has_right: ax2.set_ylabel(ylabel_right)
+        
         ax1.grid(True, ls=':', alpha=0.6)
         
         h1, l1 = ax1.get_legend_handles_labels()
@@ -260,14 +282,13 @@ if data_store:
     m_df = pd.DataFrame()
     for name, data in data_store.items():
         _d = pd.DataFrame(data)
-        # 不要なTG_rawを除いて結合
         sel_keys = [k for k in _d.columns if k != "TG_raw"]
         _d = _d[sel_keys]
         _d.columns = [f"{name}:{c}" for c in _d.columns]
         m_df = pd.concat([m_df, _d], axis=1) if not m_df.empty else _d
         
     csv_txt = m_df.to_csv(index=False, sep='\t')
-    gp = "set term pngcairo\nset out 'plot.png'\nset ylabel 'Weight %'\nplot "
+    gp = "set term pngcairo enhanced font 'Arial,12'\nset out 'plot.png'\nset xlabel 'Temp (C)'\nset ylabel 'Weight %'\nset y2label 'DTA / Derivative'\nset y2tics\nset grid\nset key outside\nplot "
     g_cmds = []
     for p in plots:
         try:
@@ -278,7 +299,7 @@ if data_store:
             ax = "x1y2" if p["ax"]==1 else "x1y1"
             g_cmds.append(f"'data.dat' u {ti}:{ci} w l lw {p['lw']} lc rgb '{p['c']}' t '{cn}' axes {ax}")
         except: pass
-    gp += ", ".join(g_cmds)
+    gp += ", \\\n     ".join(g_cmds)
     
     with d3:
         with st.popover("Gnuplot出力"):
