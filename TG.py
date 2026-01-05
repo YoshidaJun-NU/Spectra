@@ -7,7 +7,7 @@ import re
 
 # ページ設定
 st.set_page_config(page_title="TG/DTA Pro (Derivatives)", layout="wide")
-st.title("📈 TG/DTA 解析ツール Pro (微分表示対応版)")
+st.title("📈 TG/DTA 解析")
 
 # --- 関数: 高度なデータ読み込みロジック (Rigaku対応) ---
 def load_data_enhanced(file_obj, col_indices, manual_skip=None):
