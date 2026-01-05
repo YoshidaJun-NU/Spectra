@@ -12,27 +12,50 @@ def load_and_normalize_data(uploaded_file):
     ファイルを読み込み、初期重量を基準に正規化を行う関数
     Weight(%) = (Wt / W0) * 100
     """
-    # 拡張子に応じた読み込み
-    if uploaded_file.name.endswith('.csv'):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
+    # 拡張子の判定
+    file_ext = uploaded_file.name.split('.')[-1].lower()
     
-    # カラム名の簡易クレンジング (実運用に合わせて調整してください)
-    # ここでは仮に 'Temp' と 'Weight' というカラムが含まれていると想定します
-    # 実際にはユーザーにカラムを選択させるUIを追加するのがベストです
+    try:
+        if file_ext == 'xlsx':
+            # Excelファイルの場合
+            df = pd.read_excel(uploaded_file)
+        else:
+            # CSV または TXT ファイルの場合
+            # sep=None, engine='python' を指定すると、カンマ/タブ/スペース等を自動判定して読み込みます
+            df = pd.read_csv(uploaded_file, sep=None, engine='python')
+            
+    except Exception as e:
+        st.error(f"ファイル {uploaded_file.name} の読み込みに失敗しました: {e}")
+        return None
     
-    # 必須カラムの確認 (デモ用にカラム名が存在するかチェック)
+    # --- カラム名の簡易クレンジング ---
+    # 空白を除去し、すべて小文字にして扱いやすくする等の処理を入れるとより堅牢になりますが、
+    # ここでは既存ロジック通り、必須カラムがない場合の救済措置のみ行います。
+    
     if 'Temp' not in df.columns or 'Weight' not in df.columns:
-        # カラムがない場合、1列目をTemp, 2列目をWeightとみなす救済措置
-        df.columns = ['Temp', 'Weight'] + list(df.columns[2:])
+        # カラム名が一致しない場合、1列目をTemp, 2列目をWeightとみなす
+        # (装置出力の生データなどはヘッダー行が多い場合があるため、ここを調整する必要があるかもしれません)
+        if df.shape[1] >= 2:
+            df.columns = ['Temp', 'Weight'] + list(df.columns[2:])
+        else:
+            st.warning(f"{uploaded_file.name}: データの列数が不足しています。")
+            return None
 
-    # --- [機能追加: データの正規化] ---
-    # 初期値 (W0) を取得 (通常は測定開始時の重量)
+    # --- [機能: データの正規化] ---
+    # データが空でないか確認
+    if df.empty:
+        return None
+
+    # 初期値 (W0) を取得
     w0 = df['Weight'].iloc[0]
     
-    # 正規化計算
-    df['Weight_Norm'] = (df['Weight'] / w0) * 100
+    # 0除算回避
+    if w0 == 0:
+        st.warning(f"{uploaded_file.name}: 初期重量が0のため正規化できません。")
+        df['Weight_Norm'] = 0
+    else:
+        # 正規化計算
+        df['Weight_Norm'] = (df['Weight'] / w0) * 100
     
     return df
 
@@ -46,9 +69,11 @@ def main():
 
     # サイドバー: ファイルアップロード
     st.sidebar.header("Data Upload")
+    
+    # --- [変更点] typeに 'txt' を追加 ---
     uploaded_files = st.sidebar.file_uploader(
-        "CSV/Excelファイルをアップロード (複数可)", 
-        type=['csv', 'xlsx'], 
+        "データファイルをアップロード (csv, txt, xlsx)", 
+        type=['csv', 'txt', 'xlsx'], 
         accept_multiple_files=True
     )
 
@@ -62,22 +87,26 @@ def main():
     # ファイル読み込みループ
     for file in uploaded_files:
         df = load_and_normalize_data(file)
-        data_dict[file.name] = df
+        if df is not None:
+            data_dict[file.name] = df
+
+    if not data_dict:
+        st.error("有効なデータが読み込めませんでした。")
+        return
 
     # ---------------------------------------------------------
     # 2. 柔軟なスタイル設定 (Flexible Style Settings)
     # ---------------------------------------------------------
     st.subheader("1. Comparison Plot (Normalized)")
     
-    # --- [機能追加: 動的なスタイル辞書の作成] ---
     # Plotlyのデフォルトカラーパレットを取得
     palette = px.colors.qualitative.Plotly
     
     # ファイル名ごとに色を割り当てる辞書を作成
     styles = {}
     for i, filename in enumerate(data_dict.keys()):
-        color = palette[i % len(palette)]  # ファイル数が増えても色を循環させる
-        styles[filename] = {'color': color, 'line_dash': 'solid'}
+        color = palette[i % len(palette)]
+        styles[filename] = {'color': color}
 
     # プロット作成
     fig = go.Figure()
@@ -88,7 +117,7 @@ def main():
             y=df['Weight_Norm'],
             mode='lines',
             name=filename,
-            line=dict(color=styles[filename]['color']) # 動的スタイル適用
+            line=dict(color=styles[filename]['color'])
         ))
 
     fig.update_layout(
@@ -104,14 +133,7 @@ def main():
     # ---------------------------------------------------------
     st.markdown("---")
     st.subheader("2. Precise Analysis (Linear Interpolation)")
-    st.markdown(
-        """
-        グラフ上のクリックではなく、**数値計算(np.interp)** によって値を算出します。
-        - **Temp → Weight**: 指定した温度での重量残存率を計算
-        - **Weight → Temp**: 指定した重量減少率(例: 95% = 5%減)になる温度を計算
-        """
-    )
-
+    
     col1, col2 = st.columns(2)
 
     # --- 解析モードA: 温度から重量を算出 ---
@@ -123,29 +145,22 @@ def main():
         results_a = []
         
         for filename, df in data_dict.items():
-            # --- [機能追加: 線形補間 np.interp] ---
-            # x: Temp, y: Weight_Norm
             calc_weight = np.interp(target_temp, df['Temp'], df['Weight_Norm'])
             results_a.append({"File": filename, "Weight (%)": f"{calc_weight:.2f}"})
         
         st.table(pd.DataFrame(results_a))
 
-    # --- 解析モードB: 重量から温度を算出 (例: 5%分解温度) ---
+    # --- 解析モードB: 重量から温度を算出 ---
     with col2:
         st.markdown("#### B. 指定重量(%)における温度")
-        target_weight = st.number_input("重量(%)を入力 (例: 95% = 5%減量)", value=95.0, step=1.0)
+        target_weight = st.number_input("重量(%)を入力", value=95.0, step=1.0)
         
         st.write(f"**Target Weight: {target_weight} %**")
         results_b = []
         
         for filename, df in data_dict.items():
-            # --- [機能追加: 線形補間 np.interp (逆引き)] ---
-            # 重量から温度を求める場合、x(Weight)は単調増加である必要があるためソートして処理
-            # TGAでは重量は減少していくため、データを逆順にするかソートが必要
-            
-            df_sorted = df.sort_values(by='Weight_Norm') # 重量の昇順にソート
-            
-            # x: Weight_Norm (Sorted), y: Temp
+            # 重量の昇順にソートして補間
+            df_sorted = df.sort_values(by='Weight_Norm')
             calc_temp = np.interp(target_weight, df_sorted['Weight_Norm'], df_sorted['Temp'])
             results_b.append({"File": filename, "Temp (°C)": f"{calc_temp:.2f}"})
             
