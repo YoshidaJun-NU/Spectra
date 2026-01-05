@@ -29,67 +29,71 @@ def generate_dummy_data():
     return data_list
 
 # ---------------------------------------------------------
-# 関数定義: ファイルデータの読み込み (自動検出機能付き)
+# 関数定義: ファイルデータの読み込み (文字コード自動判定強化版)
 # ---------------------------------------------------------
 def load_data(uploaded_files, separator, skip_rows, has_header):
     data_list = []
     
     for uploaded_file in uploaded_files:
         try:
-            # --- 初期設定 (サイドバーの値を使用) ---
+            # --- 1. 文字コードの自動判定 ---
+            uploaded_file.seek(0)
+            content_bytes = uploaded_file.read()
+            uploaded_file.seek(0) # ポインタを必ず先頭に戻す
+
+            encoding = 'utf-8'
+            decoded_text = ""
+            
+            # UTF-8 で試行
+            try:
+                decoded_text = content_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                # 失敗したら Shift-JIS (CP932) で試行
+                try:
+                    encoding = 'cp932' # WindowsのShift-JIS拡張
+                    decoded_text = content_bytes.decode('cp932')
+                except UnicodeDecodeError:
+                    # それでもダメなら Latin-1 (エラー無視)
+                    encoding = 'latin1'
+                    decoded_text = content_bytes.decode('latin1', errors='replace')
+
+            # --- 2. 初期設定 (サイドバーの値を使用) ---
             use_sep = ',' if separator == 'comma' else '\t'
             use_skip = skip_rows
             use_header = 0 if has_header else None
             
-            # --- ファイル形式の自動判別ロジック ---
-            # ファイルポインタを先頭に戻す
-            uploaded_file.seek(0)
-            
-            # 先頭の数キロバイトを読み込んで中身をチェック
-            # (大きなファイルでも最初だけ読めば形式判別できるため)
-            preview_bytes = uploaded_file.read(4096)
-            uploaded_file.seek(0) # 読み込み後に必ずポインタを戻す
-
-            # 文字コードの推定 (utf-8 でダメなら shift_jis)
-            try:
-                preview_text = preview_bytes.decode('utf-8')
-            except UnicodeDecodeError:
-                preview_text = preview_bytes.decode('shift_jis', errors='replace')
-
-            # 【追加機能】JASCO形式などの "XYDATA" キーワード検出
-            if 'XYDATA' in preview_text:
-                lines = preview_text.splitlines()
+            # --- 3. ファイル構造の解析 (XYDATA検出など) ---
+            # デコード済みのテキスト内で検索
+            if 'XYDATA' in decoded_text:
+                lines = decoded_text.splitlines()
                 for i, line in enumerate(lines):
                     if 'XYDATA' in line:
                         # XYDATAのある行の"次の行"からデータが始まるとみなす
                         use_skip = i + 1
-                        # この形式は通常ヘッダー行を持たないのでNoneにする
                         use_header = None 
-                        # JASCO形式は通常タブ区切り
                         use_sep = '\t'
                         break
             
-            # --- データの読み込み ---
+            # --- 4. データの読み込み ---
             df = pd.read_csv(
                 uploaded_file, 
                 sep=use_sep, 
                 skiprows=use_skip, 
                 header=use_header,
-                engine='python' # 柔軟なパースのためpythonエンジンを指定
+                engine='python', 
+                encoding=encoding
             )
             
-            # データの抽出 (1列目をX, 2列目をYとする)
-            # 型変換を試みて、数値でないデータが含まれている場合のエラーを防ぐ
+            # データの抽出
             df = df.apply(pd.to_numeric, errors='coerce').dropna()
             
             if df.shape[1] < 2:
-                st.warning(f"警告: {uploaded_file.name} から十分な列(2列以上)を読み込めませんでした。区切り文字設定などを確認してください。")
+                st.warning(f"警告: {uploaded_file.name} から十分な列(2列以上)を読み込めませんでした。")
                 continue
 
             x = df.iloc[:, 0].values
             y = df.iloc[:, 1].values
             
-            # ファイル名を取得
             label = uploaded_file.name.rsplit('.', 1)[0]
             
             data_list.append({
@@ -110,12 +114,10 @@ def load_data(uploaded_files, separator, skip_rows, has_header):
 def create_gnuplot_data(data_list):
     if not data_list:
         return None
-    # 結合用のベースデータ
     df_merged = pd.DataFrame({'Wavelength': data_list[0]['x'], data_list[0]['label']: data_list[0]['y']})
     
     for item in data_list[1:]:
         df_temp = pd.DataFrame({'Wavelength': item['x'], item['label']: item['y']})
-        # 外部結合でマージ (波長が完全に一致しない場合も考慮)
         df_merged = pd.merge(df_merged, df_temp, on='Wavelength', how='outer')
     
     df_merged = df_merged.sort_values('Wavelength')
@@ -134,33 +136,34 @@ def main():
     # --- サイドバー：データ設定 ---
     st.sidebar.header("1. データ読み込み設定")
     
-    # 1-1. ファイルフォーマット設定
+    # 1. ファイルアップロード (最上部へ移動)
+    # デフォルトファイルタイプを txt 先頭に変更
+    uploaded_files = st.sidebar.file_uploader("ファイルをアップロード", accept_multiple_files=True, type=['txt', 'csv', 'dat'])
+
+    # 2. フォーマット指定
     st.sidebar.subheader("フォーマット指定")
     st.sidebar.caption("※ 'XYDATA' を含むファイルは自動認識されます。")
-    separator = st.sidebar.radio("区切り文字", ('comma', 'tab'), format_func=lambda x: "カンマ (CSV)" if x=='comma' else "タブ (TXT/DAT)")
     
-    skip_rows = st.sidebar.number_input("スキップする行数", value=0, min_value=0, help="ファイルの先頭から無視する行数を指定します（自動認識時は無視されます）。")
+    # 区切り文字のデフォルトを「タブ」に変更 (index=1)
+    separator = st.sidebar.radio("区切り文字", ('comma', 'tab'), index=1, format_func=lambda x: "カンマ (CSV)" if x=='comma' else "タブ (TXT/DAT)")
+    
+    # スキップ行数のデフォルトを 19 に変更
+    skip_rows = st.sidebar.number_input("スキップする行数", value=19, min_value=0, help="ファイルの先頭から無視する行数を指定します（自動認識時は無視されます）。")
+    
     has_header = st.sidebar.checkbox("ヘッダー(列名)がある", value=True, help="チェックを外すと、スキップ後の1行目からデータとして読み込みます。")
 
-    st.sidebar.markdown("---")
-
-    # 1-2. データソース
-    if st.sidebar.button("ダミーデータをロード (Sample 1-7)"):
-        st.session_state['data_list'] = generate_dummy_data()
-        st.sidebar.success("ダミーデータを生成しました")
-
-    uploaded_files = st.sidebar.file_uploader("ファイルをアップロード", accept_multiple_files=True, type=['csv', 'txt', 'dat'])
-    
+    # ファイルがアップロードされたら読み込み実行
     if uploaded_files:
         st.session_state['data_list'] = load_data(uploaded_files, separator, skip_rows, has_header)
+
+    st.sidebar.markdown("---")
 
     # --- サイドバー：グラフ設定 ---
     st.sidebar.header("2. グラフ設定")
     
-    # --- 前処理設定 ---
+    # 前処理設定
     st.sidebar.subheader("前処理")
     do_normalize = st.sidebar.checkbox("正規化 (Min-Max Normalization)", help="各データの最小値を0、最大値を1にスケーリングして表示・保存します。")
-    # -----------------------
 
     cmap_options = ['viridis', 'jet', 'coolwarm', 'rainbow', 'plasma', 'Manual']
     cmap_name = st.sidebar.selectbox("カラーマップ", cmap_options, index=0)
@@ -174,11 +177,18 @@ def main():
         c1, c2 = st.sidebar.columns(2)
         x_min = c1.number_input("X Min", value=200.0)
         x_max = c2.number_input("X Max", value=800.0)
-        # 正規化時はデフォルト範囲を変更
         default_ymin = -0.1 if not do_normalize else -0.05
         default_ymax = 1.5 if not do_normalize else 1.1
         y_min = c1.number_input("Y Min", value=default_ymin)
         y_max = c2.number_input("Y Max", value=default_ymax)
+
+    # --- ダミーデータ生成コマンド (左下に移動) ---
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### その他")
+    if st.sidebar.button("ダミーデータをロード (Sample 1-7)"):
+        st.session_state['data_list'] = generate_dummy_data()
+        st.sidebar.success("ダミーデータを生成しました")
+
 
     # --- メインエリア ---
     raw_data_list = st.session_state['data_list']
@@ -188,12 +198,11 @@ def main():
         display_data_list = []
         for item in raw_data_list:
             x_vals = item['x']
-            y_vals = item['y'].copy() # 元データを壊さないようにコピー
+            y_vals = item['y'].copy()
             
             if do_normalize:
                 min_y = np.min(y_vals)
                 max_y = np.max(y_vals)
-                # ゼロ除算回避
                 if max_y - min_y != 0:
                     y_vals = (y_vals - min_y) / (max_y - min_y)
                 else:
@@ -204,11 +213,9 @@ def main():
                 'x': x_vals,
                 'y': y_vals
             })
-        # ---------------------------------------------
 
         st.subheader(f"プロットプレビュー ({len(display_data_list)} samples)")
         
-        # 図の作成
         fig, ax = plt.subplots(figsize=(10, 6))
         
         num_files = len(display_data_list)
@@ -219,11 +226,9 @@ def main():
             cmap = plt.get_cmap(cmap_name)
             colors = [cmap(i) for i in np.linspace(0, 1, num_files)]
 
-        # 表示用リストを使ってプロット
         for i, item in enumerate(display_data_list):
             ax.plot(item['x'], item['y'], label=item['label'], color=colors[i], linewidth=1.5, alpha=0.8)
 
-        # 装飾
         ax.set_xlabel(x_label, fontsize=12)
         ax.set_ylabel(y_label, fontsize=12)
         ax.tick_params(direction='out', length=6, width=1)
@@ -246,19 +251,16 @@ def main():
         
         col1, col2, col3 = st.columns(3)
 
-        # PNG
         img_png = io.BytesIO()
         plt.savefig(img_png, format='png', bbox_inches='tight', dpi=300)
         img_png.seek(0)
         col1.download_button("画像 (PNG)", data=img_png, file_name="plot.png", mime="image/png")
 
-        # TIFF
         img_tiff = io.BytesIO()
         plt.savefig(img_tiff, format='tiff', bbox_inches='tight', dpi=300, pil_kwargs={"compression": "tiff_lzw"})
         img_tiff.seek(0)
         col2.download_button("画像 (TIFF)", data=img_tiff, file_name="plot.tiff", mime="image/tiff")
 
-        # Gnuplot
         gnu_data = create_gnuplot_data(display_data_list)
         if gnu_data:
             fname = "data_normalized.dat" if do_normalize else "data.dat"
