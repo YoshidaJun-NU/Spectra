@@ -6,15 +6,14 @@ import io
 import re
 
 # ページ設定
-st.set_page_config(page_title="TG/DTA Pro (Rigaku Enhanced)", layout="wide")
-st.title("📈 TG/DTA 解析ツール Pro (リガク完全対応版)")
+st.set_page_config(page_title="TG/DTA Pro (Weight%)", layout="wide")
+st.title("📈 TG/DTA 解析ツール Pro (Weight% 自動変換版)")
 
-# --- 関数: 高度なデータ読み込みロジック ---
+# --- 関数: 高度なデータ読み込みロジック (Rigaku対応) ---
 def load_data_enhanced(file_obj, col_indices, manual_skip=None):
     """
     Rigaku形式(#GDタグ)や一般的なCSV/TXTを柔軟に読み込む関数
     """
-    # 1. バイト列として読み込み、デコードを試行
     bytes_data = file_obj.read()
     encodings = ['shift_jis', 'cp932', 'utf-8', 'latin1']
     text_data = ""
@@ -31,82 +30,58 @@ def load_data_enhanced(file_obj, col_indices, manual_skip=None):
 
     lines = text_data.splitlines()
     
-    # --- パターンA: Rigaku (#GD タグ) 形式の検出 ---
-    # 行の先頭が #GD で始まる行を探す
+    # --- パターンA: Rigaku (#GD タグ) 形式 ---
     gd_lines = [line for line in lines if line.strip().startswith('#GD')]
     
     df = None
-    
-    if len(gd_lines) > 10:  # #GD行がある程度あればRigaku形式とみなす
-        # #GD を削除して数値部分だけにする
-        # Rigaku形式は "#GD (タブ) Time (タブ) Temp..." となっていることが多い
+    if len(gd_lines) > 10:
         processed_lines = []
         for line in gd_lines:
-            # "#GD" を削除し、前後の空白を除去
             clean_line = line.replace('#GD', '').strip()
             processed_lines.append(clean_line)
-            
-        # データ結合してDataFrame化 (タブ区切りまたはスペース区切り)
         data_str = "\n".join(processed_lines)
         try:
             df = pd.read_csv(io.StringIO(data_str), sep=None, engine='python', header=None)
         except:
-            # 失敗したらタブ区切り固定で試行
             df = pd.read_csv(io.StringIO(data_str), sep='\t', header=None)
             
     else:
-        # --- パターンB: 通常のテキスト/CSV形式 ---
-        # ユーザー指定のスキップ行数がある場合
+        # --- パターンB: 通常形式 ---
         if manual_skip is not None and manual_skip > 0:
-            # manual_skip は "データの開始行番号(1始まり)" を想定しているため、
-            # skiprows には manual_skip - 1 を渡す (0始まりインデックスのため)
-            # ただし、ヘッダー行を含めるなら調整が必要。
-            # ここでは「指定行からデータが始まる（ヘッダーなし）」として扱う
             data_str = "\n".join(lines[manual_skip-1:])
             df = pd.read_csv(io.StringIO(data_str), sep=None, engine='python', header=None)
         else:
-            # 自動検出ロジック (Temp/TG などのキーワード探索)
             header_idx = -1
             keywords = ["Temp", "Temperature", "TG", "DTA", "Time", "min"]
-            
             for i, line in enumerate(lines):
-                hit = sum(1 for k in keywords if k in line)
-                if hit >= 2:
+                if sum(1 for k in keywords if k in line) >= 2:
                     header_idx = i
                     break
             
             if header_idx != -1:
-                # ヘッダーが見つかった位置から読み込み
-                # 直下の行が単位行([mg]など)の場合は数値変換エラーになるので除去する処理が必要
                 data_str = "\n".join(lines[header_idx:])
                 try:
-                    # まずヘッダーありで読み込む
                     temp_df = pd.read_csv(io.StringIO(data_str), sep=None, engine='python', header=0)
-                    # 1行目が数値かチェック (単位行判定)
                     try:
                         pd.to_numeric(temp_df.iloc[0, col_indices['temp']])
                         df = temp_df
                     except:
-                        # 数値でなければ1行目(単位行)をスキップ
                         df = pd.read_csv(io.StringIO(data_str), sep=None, engine='python', header=0, skiprows=[1])
                 except:
                     pass
             
             if df is None:
-                # 何も見つからなければ単純読み込み
                 df = pd.read_csv(io.StringIO(text_data), sep=None, engine='python', header=None)
 
     if df is None or df.empty:
-        raise ValueError("データを読み取れませんでした。手動設定を試してください。")
+        raise ValueError("データを読み取れませんでした。")
 
     return df
 
 # --- サイドバーUI ---
 st.sidebar.header("1. データ読み込み")
-
-# 読み込みオプション
 with st.sidebar.expander("詳細設定 (読み込めない場合)", expanded=False):
-    manual_row_start = st.number_input("データの開始行番号 (指定時のみ有効)", value=0, min_value=0, help="例: 49行目からデータがある場合は49と入力。0の場合は自動検出します。")
+    manual_row_start = st.number_input("データの開始行番号", value=0, min_value=0)
 
 uploaded_files = st.sidebar.file_uploader(
     "ファイルをアップロード", 
@@ -116,11 +91,9 @@ uploaded_files = st.sidebar.file_uploader(
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("列の定義 (0始まり)")
-# リガク形式(#GD)の場合、#GD除去後の列順は概ね: 0:Time, 1:Temp, 3:TG, 5:DTA のことが多いがファイルによる
-# ファイル読み込み後にプレビューを表示して確認できるようにする
 col_temp = st.sidebar.number_input("温度列 (Temp)", value=1, min_value=0)
-col_tg = st.sidebar.number_input("重量列 (TG)", value=3, min_value=0) # リガクに合わせてデフォルトを3に変更
-col_dta = st.sidebar.number_input("DTA列", value=5, min_value=0)   # リガクに合わせてデフォルトを5に変更
+col_tg = st.sidebar.number_input("重量列 (TG)", value=3, min_value=0)
+col_dta = st.sidebar.number_input("DTA列", value=5, min_value=0)
 
 col_indices = {'temp': col_temp, 'tg': col_tg, 'dta': col_dta}
 data_store = {}
@@ -128,51 +101,54 @@ data_store = {}
 if uploaded_files:
     for uploaded_file in uploaded_files:
         try:
-            # 独自ローダーで読み込み
             skip_val = manual_row_start if manual_row_start > 0 else None
             df = load_data_enhanced(uploaded_file, col_indices, manual_skip=skip_val)
             
-            # --- プレビュー機能（デバッグ用）---
-            # 最初の数行を表示して列番号を確認しやすくする
-            if len(data_store) == 0: # 最初のファイルだけ表示
-                with st.expander(f"データプレビュー: {uploaded_file.name}", expanded=False):
-                    st.dataframe(df.head())
-                    st.info(f"現在の列指定 -> 温度:{col_temp}, TG:{col_tg}, DTA:{col_dta}")
-            
             # 数値変換と抽出
-            # 列番号が範囲外でないかチェック
             max_col = df.shape[1] - 1
             if col_temp > max_col or col_tg > max_col or col_dta > max_col:
-                st.error(f"{uploaded_file.name}: 列番号が大きすぎます。データは全{max_col+1}列です。")
+                st.error(f"{uploaded_file.name}: 列番号指定が範囲外です。")
                 continue
 
             temp = pd.to_numeric(df.iloc[:, col_temp], errors='coerce').values
-            tg = pd.to_numeric(df.iloc[:, col_tg], errors='coerce').values
+            tg_raw = pd.to_numeric(df.iloc[:, col_tg], errors='coerce').values # 生データ(mg)
             dta = pd.to_numeric(df.iloc[:, col_dta], errors='coerce').values
             
             # NaN除去
-            mask = ~np.isnan(temp) & ~np.isnan(tg) & ~np.isnan(dta)
+            mask = ~np.isnan(temp) & ~np.isnan(tg_raw) & ~np.isnan(dta)
             temp = temp[mask]
-            tg = tg[mask]
+            tg_raw = tg_raw[mask]
             dta = dta[mask]
 
             if len(temp) == 0:
-                st.error(f"{uploaded_file.name}: 有効な数値データが見つかりませんでした。列指定を確認してください。")
                 continue
 
-            # ソート
+            # 温度順にソート
             sort_idx = np.argsort(temp)
             temp = temp[sort_idx]
-            tg = tg[sort_idx]
+            tg_raw = tg_raw[sort_idx]
             dta = dta[sort_idx]
 
-            # 微分計算
-            dtg = np.gradient(tg, temp)
+            # --- Weight % への変換処理 ---
+            # 最も低温（ソート済みの先頭）を100%とする
+            initial_weight = tg_raw[0]
+            if initial_weight != 0:
+                tg_percent = (tg_raw / initial_weight) * 100.0
+            else:
+                tg_percent = tg_raw # 0割回避（そのまま）
+
+            # 微分計算 (Weight%ベース)
+            dtg = np.gradient(tg_percent, temp)
             ddta = np.gradient(dta, temp)
             
             data_store[uploaded_file.name] = {
-                "Temp": temp, "TG": tg, "DTA": dta, 
-                "DTG": dtg, "DDTA": ddta, "DTA (Corrected)": dta.copy()
+                "Temp": temp, 
+                "TG": tg_percent,       # 変換後の%データを使用
+                "TG_raw": tg_raw,       # 必要なら生データも保持
+                "DTA": dta, 
+                "DTG": dtg, 
+                "DDTA": ddta, 
+                "DTA (Corrected)": dta.copy()
             }
             
         except Exception as e:
@@ -190,7 +166,6 @@ if data_store:
         
         for name, data in data_store.items():
             t, d = data["Temp"], data["DTA"]
-            # 範囲内チェック
             if t.min() <= bl_t1 <= t.max() and t.min() <= bl_t2 <= t.max():
                 y1 = np.interp(bl_t1, t, d)
                 y2 = np.interp(bl_t2, t, d)
@@ -200,9 +175,11 @@ if data_store:
                     baseline = m * t + c
                     data_store[name]["DTA (Corrected)"] = d - baseline
 
-# --- 3. 重量減少量 ---
+# --- 3. 重量減少量 (%) ---
 if data_store:
-    st.header("📊 重量減少 (Delta Weight)")
+    st.header("📊 重量減少率 (Delta Weight %)")
+    st.info("※ 自動的にWeight%に変換された値で計算します")
+    
     with st.expander("計算パネル"):
         c1, c2 = st.columns(2)
         wt1 = c1.number_input("開始温度 T1", value=100.0)
@@ -210,9 +187,15 @@ if data_store:
         
         res = []
         for name, data in data_store.items():
+            # すでにTGは%になっている
             w1 = np.interp(wt1, data["Temp"], data["TG"])
             w2 = np.interp(wt2, data["Temp"], data["TG"])
-            res.append({"File": name, f"TG@{wt1}": f"{w1:.2f}", f"TG@{wt2}": f"{w2:.2f}", "ΔWt": f"{w1-w2:.3f}"})
+            res.append({
+                "File": name, 
+                f"Wt%@{wt1:.0f}C": f"{w1:.2f}%", 
+                f"Wt%@{wt2:.0f}C": f"{w2:.2f}%", 
+                "ΔWt (%)": f"{w1-w2:.3f}%"
+            })
         st.table(pd.DataFrame(res))
 
 # --- 4. プロット ---
@@ -225,7 +208,6 @@ if data_store:
         st.subheader("表示設定")
         for name in data_store.keys():
             st.markdown(f"**{name}**")
-            # デフォルト選択
             def_items = ["TG", "DTA (Corrected)"] if use_correction else ["TG", "DTA"]
             sels = st.multiselect(f"項目 ({name})", ["TG", "DTA", "DTA (Corrected)", "DTG", "DDTA"], default=def_items, key=f"ms_{name}")
             
@@ -238,7 +220,7 @@ if data_store:
                     c = st.color_picker("色", col_def, key=f"c_{name}_{item}")
                     ls = st.selectbox("線種", ["-", "--", "-.", ":"], key=f"ls_{name}_{item}")
                     lw = st.slider("太さ", 0.5, 4.0, 1.5, key=f"lw_{name}_{item}")
-                    ax = st.radio("軸", ["左(TG)", "右(DTA)"], index=1 if "DTA" in item else 0, key=f"ax_{name}_{item}")
+                    ax = st.radio("軸", ["左(TG %)", "右(DTA)"], index=1 if "DTA" in item else 0, key=f"ax_{name}_{item}")
                     plots.append({"name": name, "type": item, "c": c, "ls": ls, "lw": lw, "ax": 0 if "左" in ax else 1})
 
     with c_plt:
@@ -251,7 +233,7 @@ if data_store:
             axs[p["ax"]].plot(d["Temp"], d[p["type"]], label=f"{p['name']} {p['type']}", color=p["c"], ls=p["ls"], lw=p["lw"])
             
         ax1.set_xlabel("Temperature (°C)")
-        ax1.set_ylabel("Weight % / DTG")
+        ax1.set_ylabel("Weight (%) / DTG")  # ラベル変更
         ax2.set_ylabel("DTA (uV) / DDTA")
         ax1.grid(True, ls=':', alpha=0.6)
         
@@ -264,10 +246,12 @@ if data_store:
     st.header("💾 保存")
     d1, d2, d3 = st.columns(3)
     
+    # PNG
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
     d1.download_button("PNG保存", buf.getvalue(), "plot.png", "image/png")
     
+    # TIFF
     buf_t = io.BytesIO()
     fig.savefig(buf_t, format='tiff', dpi=300, bbox_inches='tight')
     d2.download_button("TIFF保存", buf_t.getvalue(), "plot.tiff", "image/tiff")
@@ -276,11 +260,14 @@ if data_store:
     m_df = pd.DataFrame()
     for name, data in data_store.items():
         _d = pd.DataFrame(data)
+        # 不要なTG_rawを除いて結合
+        sel_keys = [k for k in _d.columns if k != "TG_raw"]
+        _d = _d[sel_keys]
         _d.columns = [f"{name}:{c}" for c in _d.columns]
         m_df = pd.concat([m_df, _d], axis=1) if not m_df.empty else _d
         
     csv_txt = m_df.to_csv(index=False, sep='\t')
-    gp = "set term pngcairo\nset out 'plot.png'\nplot "
+    gp = "set term pngcairo\nset out 'plot.png'\nset ylabel 'Weight %'\nplot "
     g_cmds = []
     for p in plots:
         try:
