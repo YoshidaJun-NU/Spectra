@@ -1,237 +1,223 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 import io
 
-# ページ設定
-st.set_page_config(page_title="TGA Plotter", layout="wide")
+# 日本語フォント設定（Windows環境などを想定）
+# 環境に合わせてフォントファミリーは変更が必要な場合があります
+plt.rcParams['font.family'] = 'Meiryo'
 
-st.title("TGA データプロッター & 解析ツール")
-st.markdown("""
-複数のTGAデータを読み込み、プロット・比較・解析を行うツールです。
-CSVまたはExcelファイルをアップロードしてください。
-""")
-
-# --- サイドバー：データ読み込みと設定 ---
-st.sidebar.header("1. データアップロード")
-uploaded_files = st.sidebar.file_uploader(
-    "ファイルをアップロード (複数可)", 
-    type=['csv', 'xlsx', 'txt'], 
-    accept_multiple_files=True
-)
-
-# データの格納用辞書
-data_dict = {}
-
-# デフォルトの色リスト（Plotlyのデフォルトなど）
-DEFAULT_COLORS = [
-    '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-    '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
-]
-LINE_STYLES = ['solid', 'dash', 'dot', 'dashdot']
-
-if uploaded_files:
-    st.sidebar.markdown("---")
-    st.sidebar.header("2. データ読み込み設定")
+def parse_asc_file(uploaded_file):
+    """
+    提供されたASC形式のファイルを解析してDataFrameを返す関数
+    """
+    # バイナリとして読み込み、Shift-JISでデコード（日本語パスなどが含まれるため）
+    content = uploaded_file.getvalue().decode('shift_jis', errors='ignore')
+    lines = content.splitlines()
     
-    # 共通のカラム名設定（簡易化のため、全ファイル共通と仮定して入力を促す）
-    # 実際の運用ではファイルごとに推定ロジックを入れると親切です
-    with st.sidebar.expander("カラム設定 (全ファイル共通)", expanded=True):
-        st.info("データに含まれる列名を指定してください")
-        temp_col_name = st.text_input("温度の列名 (Temperature)", value="Temperature")
-        weight_col_name = st.text_input("重量の列名 (Weight)", value="Weight")
+    header_line_index = -1
+    data_start_index = -1
+    headers = []
+    
+    # 行を走査してヘッダーとデータの開始位置を探す
+    for i, line in enumerate(lines):
+        # 列名定義行を探す (Time, Tempなどが含まれる行)
+        if "Time" in line and "Temp" in line and not line.startswith('#'):
+            header_line_index = i
+            # タブ区切りでヘッダーを取得（先頭の空白除去）
+            headers = [h.strip() for h in line.strip().split('\t') if h.strip()]
+            continue
         
-        # エンコーディング選択 (日本語データ対策)
-        encoding_option = st.selectbox("文字コード", ["utf-8", "shift_jis", "cp932"], index=0)
+        # データ開始行 (#GD) を探す
+        if line.startswith('#GD'):
+            data_start_index = i
+            break
+            
+    if header_line_index == -1 or data_start_index == -1:
+        st.error("ASCファイルのフォーマットを解析できませんでした。")
+        return None
 
-    # ファイル読み込み処理
-    for uploaded_file in uploaded_files:
+    # データを抽出
+    data_rows = []
+    for line in lines[data_start_index:]:
+        if line.startswith('#GD'):
+            # #GDを除去し、タブで分割
+            raw_values = line.replace('#GD', '').strip().split('\t')
+            # 数値変換
+            try:
+                values = [float(x) for x in raw_values if x.strip()]
+                data_rows.append(values)
+            except ValueError:
+                continue
+
+    # DataFrame作成 (ヘッダーと列数が合わない場合の調整)
+    df = pd.DataFrame(data_rows)
+    
+    # ヘッダー割り当て（列数が合う範囲で）
+    if len(headers) == df.shape[1]:
+        df.columns = headers
+    else:
+        st.warning(f"ヘッダーの列数({len(headers)})とデータの列数({df.shape[1]})が一致しません。自動割り当てを行います。")
+        # 可能な限り割り当て
+        df.columns = headers[:df.shape[1]]
+
+    return df
+
+def main():
+    st.title("熱分析データ (TG/DTA) 可視化ツール")
+    st.write("ASCファイルまたはCSVファイルをアップロードしてください。")
+
+    # 1. ファイルアップロード
+    uploaded_file = st.file_uploader("ファイルを選択", type=['asc', 'csv', 'txt'])
+
+    if uploaded_file is not None:
+        file_ext = uploaded_file.name.split('.')[-1].lower()
+        
+        # 2. ファイル読み込み処理
         try:
-            # 拡張子で判定
-            if uploaded_file.name.endswith('.csv') or uploaded_file.name.endswith('.txt'):
-                df = pd.read_csv(uploaded_file, encoding=encoding_option)
+            if file_ext == 'csv':
+                # CSVの場合（ヘッダーがある前提）
+                df = pd.read_csv(uploaded_file)
             else:
-                df = pd.read_excel(uploaded_file)
-            
-            # 列名のクリーニング（空白削除など）
-            df.columns = [c.strip() for c in df.columns]
-            
-            # 指定された列があるか確認
-            if temp_col_name in df.columns and weight_col_name in df.columns:
-                # データをソート（温度順）
-                df = df.sort_values(by=temp_col_name)
-                data_dict[uploaded_file.name] = df
-            else:
-                st.sidebar.error(f"{uploaded_file.name}: 指定された列名が見つかりません。")
-                st.sidebar.write(f"検出された列名: {list(df.columns)}")
-                
+                # ASCファイルの場合
+                df = parse_asc_file(uploaded_file)
         except Exception as e:
-            st.sidebar.error(f"{uploaded_file.name} の読み込みに失敗しました: {e}")
+            st.error(f"ファイルの読み込みエラー: {e}")
+            return
 
-# --- メインエリア：プロット設定と表示 ---
+        if df is None or df.empty:
+            st.error("データフレームが空です。")
+            return
 
-if data_dict:
-    # 3. プロット対象と正規化の選択
-    st.subheader("設定 & プロット")
-    
-    col_control1, col_control2 = st.columns([1, 2])
-    
-    with col_control1:
-        st.markdown("#### 表示データの選択")
-        selected_files = st.multiselect(
-            "プロットするファイルを選択",
-            options=list(data_dict.keys()),
-            default=list(data_dict.keys())
+        st.write("### 読み込みデータプレビュー")
+        st.dataframe(df.head())
+
+        # 3. 列の選択設定（サイドバー）
+        st.sidebar.header("プロット設定")
+        
+        # 列名のリスト
+        columns = df.columns.tolist()
+        
+        # デフォルト値の推測
+        default_x = [c for c in columns if "Temp" in c][0] if any("Temp" in c for c in columns) else columns[0]
+        default_tg = [c for c in columns if "TG" in c and "DTG" not in c][0] if any("TG" in c and "DTG" not in c for c in columns) else columns[1] if len(columns) > 1 else columns[0]
+        default_dta = [c for c in columns if "DTA" in c and "DDTA" not in c][0] if any("DTA" in c and "DDTA" not in c for c in columns) else columns[2] if len(columns) > 2 else columns[0]
+
+        # ユーザー選択
+        x_col = st.sidebar.selectbox("X軸 (温度など)", columns, index=columns.index(default_x))
+        tg_col = st.sidebar.selectbox("TGデータ列 (%)", columns, index=columns.index(default_tg))
+        dta_col = st.sidebar.selectbox("DTAデータ列 (μV)", columns, index=columns.index(default_dta))
+
+        # 微分曲線の設定
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("微分曲線の表示")
+        show_dtg = st.sidebar.checkbox("DTG (TGの微分) を表示", value=True)
+        show_ddta = st.sidebar.checkbox("DDTA (DTAの微分) を表示", value=False)
+
+        # 4. 微分データの準備
+        # データセットにDTG/DDTAが既に含まれているか確認し、なければ計算する
+        
+        # DTG
+        dtg_data = None
+        dtg_label = "DTG (calc)"
+        existing_dtg = [c for c in columns if "DTG" in c]
+        if existing_dtg:
+             use_existing_dtg = st.sidebar.checkbox(f"ファイル内の {existing_dtg[0]} を使用", value=True)
+             if use_existing_dtg:
+                 dtg_data = df[existing_dtg[0]]
+                 dtg_label = existing_dtg[0]
+        
+        if dtg_data is None and show_dtg:
+            # 微分計算 (dy/dx)
+            dtg_data = df[tg_col].diff() / df[x_col].diff()
+            # ノイズ軽減のため移動平均をかける場合（オプション）
+            # dtg_data = dtg_data.rolling(window=5).mean()
+
+        # DDTA
+        ddta_data = None
+        ddta_label = "DDTA (calc)"
+        existing_ddta = [c for c in columns if "DDTA" in c]
+        if existing_ddta:
+             use_existing_ddta = st.sidebar.checkbox(f"ファイル内の {existing_ddta[0]} を使用", value=True)
+             if use_existing_ddta:
+                 ddta_data = df[existing_ddta[0]]
+                 ddta_label = existing_ddta[0]
+
+        if ddta_data is None and show_ddta:
+            # 微分計算
+            ddta_data = df[dta_col].diff() / df[x_col].diff()
+
+        # 5. プロット描画
+        st.write("### グラフ")
+        
+        # グラフの作成 (2軸プロット)
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+
+        # --- 第1軸 (左): TG ---
+        color_tg = 'tab:red'
+        ax1.set_xlabel(x_col)
+        ax1.set_ylabel(tg_col, color=color_tg)
+        l1, = ax1.plot(df[x_col], df[tg_col], color=color_tg, label=tg_col, linewidth=2)
+        ax1.tick_params(axis='y', labelcolor=color_tg)
+        ax1.grid(True, which='both', linestyle='--', alpha=0.5)
+
+        lines = [l1]
+
+        # --- 第2軸 (右): DTA ---
+        ax2 = ax1.twinx()  # X軸を共有
+        color_dta = 'tab:blue'
+        ax2.set_ylabel(dta_col, color=color_dta)
+        l2, = ax2.plot(df[x_col], df[dta_col], color=color_dta, label=dta_col, linewidth=1.5)
+        ax2.tick_params(axis='y', labelcolor=color_dta)
+        lines.append(l2)
+
+        # --- 微分曲線の追加 (軸は適宜調整、今回は第3, 第4の軸を作ると複雑になるため、既存軸に重ねるかオフセットしますが、
+        # 見やすさのため、DTGはTG軸(左)に関連付け、DDTAはDTA軸(右)に関連付けるか、
+        # あるいは「正規化」して表示するのが一般的ですが、ここではスケールが違うため
+        # 簡易的に twinx をさらに追加して表示します (Matplotlibのparasite axes的なアプローチ)
+        
+        # DTGのプロット (破線で表示)
+        if show_dtg and dtg_data is not None:
+            # DTG用に新しい軸を作る（TGと同じ左側だがスケールが違うため）
+            # 視認性を上げるため、右側に軸を追加して対応
+            ax3 = ax1.twinx()
+            # 右側の軸の位置を少し外側にずらす
+            ax3.spines["right"].set_position(("axes", 1.15))
+            
+            color_dtg = 'salmon'
+            ax3.set_ylabel(dtg_label, color=color_dtg)
+            l3, = ax3.plot(df[x_col], dtg_data, color=color_dtg, linestyle='--', label=dtg_label, alpha=0.8)
+            ax3.tick_params(axis='y', labelcolor=color_dtg)
+            lines.append(l3)
+
+        # DDTAのプロット (点線で表示)
+        if show_ddta and ddta_data is not None:
+            ax4 = ax1.twinx()
+            # 右側の軸の位置をさらに外側にずらす
+            ax4.spines["right"].set_position(("axes", 1.3))
+            
+            color_ddta = 'skyblue'
+            ax4.set_ylabel(ddta_label, color=color_ddta)
+            l4, = ax4.plot(df[x_col], ddta_data, color=color_ddta, linestyle=':', label=ddta_label, alpha=0.8)
+            ax4.tick_params(axis='y', labelcolor=color_ddta)
+            lines.append(l4)
+
+        # 凡例をまとめて表示
+        labels = [l.get_label() for l in lines]
+        ax1.legend(lines, labels, loc='upper left')
+
+        st.pyplot(fig)
+
+        # データダウンロード
+        st.write("### データのエクスポート")
+        csv = df.to_csv(index=False).encode('utf-8_sig')
+        st.download_button(
+            "CSVとしてダウンロード",
+            csv,
+            "processed_data.csv",
+            "text/csv",
+            key='download-csv'
         )
-        
-        st.markdown("#### データ処理")
-        normalize_option = st.checkbox("重量%に変換する (初期値を100%とする)", value=True)
-        initial_weight_input = 0.0
-        
-        if normalize_option:
-            calc_method = st.radio(
-                "初期重量($W_0$)の決定方法", 
-                ["データの最初の値を使用", "手動で入力"]
-            )
-            if calc_method == "手動で入力":
-                initial_weight_manual = st.number_input("初期重量 (mg等)", value=10.0)
 
-    # 4. スタイル設定（各ファイルごと）
-    with col_control2:
-        st.markdown("#### グラフスタイル設定")
-        style_expander = st.expander("詳細なスタイル設定 (色・線種)", expanded=False)
-        
-        styles = {}
-        with style_expander:
-            st.write("ファイルごとのスタイルを指定できます")
-            for i, filename in enumerate(selected_files):
-                cols = st.columns(4)
-                cols[0].write(f"**{filename}**")
-                
-                # デフォルト色の割り当て（ループ）
-                default_color = DEFAULT_COLORS[i % len(DEFAULT_COLORS)]
-                
-                color = cols[1].color_picker(f"色 ({i})", value=default_color, key=f"c_{i}")
-                line_style = cols[2].selectbox(f"線種 ({i})", LINE_STYLES, index=0, key=f"ls_{i}")
-                width = cols[3].number_input(f"太さ ({i})", value=2.0, min_value=0.5, step=0.5, key=f"w_{i}")
-                
-                styles[filename] = {"color": color, "dash": line_style, "width": width}
-
-    # 5. グラフ描画
-    fig = go.Figure()
-
-    for filename in selected_files:
-        df = data_dict[filename]
-        x_data = df[temp_col_name]
-        y_data = df[weight_col_name]
-        
-        # 重量%への変換ロジック
-        if normalize_option:
-            if calc_method == "データの最初の値を使用":
-                w0 = y_data.iloc[0]
-            else:
-                w0 = initial_weight_manual
-            
-            # 0除算回避
-            if w0 != 0:
-                y_data = (y_data / w0) * 100
-        
-        # スタイルの取得
-        style = styles.get(filename, {"color": DEFAULT_COLORS[0], "dash": "solid", "width": 2})
-
-        fig.add_trace(go.Scatter(
-            x=x_data,
-            y=y_data,
-            mode='lines',
-            name=filename,
-            line=dict(
-                color=style['color'],
-                dash=style['dash'],
-                width=style['width']
-            )
-        ))
-
-    # 軸範囲の設定
-    st.markdown("#### 軸範囲の設定")
-    range_col1, range_col2 = st.columns(2)
-    with range_col1:
-        x_min_input = st.number_input("横軸 (Temp) Min", value=0)
-        x_max_input = st.number_input("横軸 (Temp) Max", value=800)
-    with range_col2:
-        y_min_input = st.number_input("縦軸 (Weight %) Min", value=0)
-        y_max_input = st.number_input("縦軸 (Weight %) Max", value=110)
-
-    fig.update_layout(
-        title="TGA Curve",
-        xaxis_title="Temperature (℃)",
-        yaxis_title="Weight (%)" if normalize_option else "Weight (raw)",
-        xaxis=dict(range=[x_min_input, x_max_input]),
-        yaxis=dict(range=[y_min_input, y_max_input]),
-        template="plotly_white",
-        height=600,
-        hovermode="x unified" # ホバー時に全系列の値を表示
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 6. 2点間の差分解析
-    st.markdown("---")
-    st.subheader("解析: 2点間の重量差算出")
-    st.info("指定した2つの温度における重量（%）の差を計算します。分解量などの確認に使用できます。")
-
-    analysis_col1, analysis_col2, analysis_col3 = st.columns(3)
-    temp1 = analysis_col1.number_input("温度点 1 (℃)", value=100.0, step=10.0)
-    temp2 = analysis_col2.number_input("温度点 2 (℃)", value=500.0, step=10.0)
-    
-    if st.button("差分を計算"):
-        results = []
-        for filename in selected_files:
-            df = data_dict[filename]
-            
-            # データ再構築（プロット時と同じ変換を行う）
-            x_vals = df[temp_col_name].values
-            y_vals = df[weight_col_name].values
-            
-            if normalize_option:
-                if calc_method == "データの最初の値を使用":
-                    w0 = y_vals[0]
-                else:
-                    w0 = initial_weight_manual
-                if w0 != 0:
-                    y_vals = (y_vals / w0) * 100
-            
-            # 線形補間で指定温度の値を取得するための関数
-            def get_val_at_temp(target_t, x_arr, y_arr):
-                # 範囲外チェック
-                if target_t < x_arr.min() or target_t > x_arr.max():
-                    return None
-                # 最も近いインデックスを探す（簡易的）または補間
-                # ここでは正確性を出すためnumpyのinterpを使用
-                import numpy as np
-                return np.interp(target_t, x_arr, y_arr)
-
-            val1 = get_val_at_temp(temp1, x_vals, y_vals)
-            val2 = get_val_at_temp(temp2, x_vals, y_vals)
-            
-            if val1 is not None and val2 is not None:
-                diff = val1 - val2
-                results.append({
-                    "ファイル名": filename,
-                    f"{temp1}℃での重量(%)": f"{val1:.2f}",
-                    f"{temp2}℃での重量(%)": f"{val2:.2f}",
-                    "差分 (Weight Loss)": f"{diff:.2f} %"
-                })
-            else:
-                results.append({
-                    "ファイル名": filename,
-                    "結果": "指定温度がデータ範囲外です"
-                })
-        
-        st.table(pd.DataFrame(results))
-
-else:
-    st.info("サイドバーからデータをアップロードしてください。")
-
-# フッター
-st.markdown("---")
-st.caption("Developed with Streamlit & Plotly")
+if __name__ == '__main__':
+    main()
