@@ -5,6 +5,42 @@ import numpy as np
 import io
 
 # ---------------------------------------------------------
+# 定数定義
+# ---------------------------------------------------------
+# デフォルトのカラーパレット (Matplotlib tab10 hex codes)
+DEFAULT_COLORS = [
+    '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+    '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+]
+
+# 線種の表示名とMatplotlib記号の対応
+LINE_STYLES = {
+    'Solid (実線)': '-',
+    'Dashed (破線)': '--',
+    'Dash-dot (一点鎖線)': '-.',
+    'Dotted (点線)': ':'
+}
+
+# ---------------------------------------------------------
+# 関数定義: スタイルの初期化
+# ---------------------------------------------------------
+def init_styles(data_list):
+    """データごとにデフォルトのスタイル情報をsession_stateに保存する"""
+    if 'styles' not in st.session_state:
+        st.session_state['styles'] = {}
+    
+    for i, item in enumerate(data_list):
+        label = item['label']
+        # まだ設定がない場合のみ初期化
+        if label not in st.session_state['styles']:
+            default_color = DEFAULT_COLORS[i % len(DEFAULT_COLORS)]
+            st.session_state['styles'][label] = {
+                'color': default_color,
+                'linewidth': 1.5,
+                'linestyle': 'Solid (実線)'
+            }
+
+# ---------------------------------------------------------
 # 関数定義: ダミーデータの生成
 # ---------------------------------------------------------
 def generate_dummy_data():
@@ -29,7 +65,7 @@ def generate_dummy_data():
     return data_list
 
 # ---------------------------------------------------------
-# 関数定義: ファイルデータの読み込み (文字コード自動判定強化版)
+# 関数定義: ファイルデータの読み込み
 # ---------------------------------------------------------
 def load_data(uploaded_files, separator, skip_rows, has_header):
     data_list = []
@@ -39,30 +75,27 @@ def load_data(uploaded_files, separator, skip_rows, has_header):
             # --- 1. 文字コードの自動判定 ---
             uploaded_file.seek(0)
             content_bytes = uploaded_file.read()
-            uploaded_file.seek(0) # ポインタを必ず先頭に戻す
+            uploaded_file.seek(0)
 
             encoding = 'utf-8'
             decoded_text = ""
             
-            # UTF-8 で試行
             try:
                 decoded_text = content_bytes.decode('utf-8')
             except UnicodeDecodeError:
-                # 失敗したら Shift-JIS (CP932) で試行
                 try:
-                    encoding = 'cp932' # WindowsのShift-JIS拡張
+                    encoding = 'cp932'
                     decoded_text = content_bytes.decode('cp932')
                 except UnicodeDecodeError:
-                    # それでもダメなら Latin-1 (エラー無視)
                     encoding = 'latin1'
                     decoded_text = content_bytes.decode('latin1', errors='replace')
 
-            # --- 2. 初期設定 (サイドバーの値を使用) ---
+            # --- 2. 初期設定 ---
             use_sep = ',' if separator == 'comma' else '\t'
             use_skip = skip_rows
             use_header = 0 if has_header else None
             
-            # --- 3. ファイル構造の解析 (XYDATA検出など) ---
+            # --- 3. ファイル構造の解析 (XYDATA検出) ---
             if 'XYDATA' in decoded_text:
                 lines = decoded_text.splitlines()
                 for i, line in enumerate(lines):
@@ -82,7 +115,6 @@ def load_data(uploaded_files, separator, skip_rows, has_header):
                 encoding=encoding
             )
             
-            # データの抽出
             df = df.apply(pd.to_numeric, errors='coerce').dropna()
             
             if df.shape[1] < 2:
@@ -131,7 +163,7 @@ def main():
     if 'data_list' not in st.session_state:
         st.session_state['data_list'] = []
 
-    # --- サイドバー：データ設定 ---
+    # --- サイドバー：1. データ読み込み設定 ---
     st.sidebar.header("1. データ読み込み設定")
     
     # 1. ファイルアップロード
@@ -142,16 +174,17 @@ def main():
     st.sidebar.caption("※ 'XYDATA' を含むファイルは自動認識されます。")
     
     separator = st.sidebar.radio("区切り文字", ('comma', 'tab'), index=1, format_func=lambda x: "カンマ (CSV)" if x=='comma' else "タブ (TXT/DAT)")
-    skip_rows = st.sidebar.number_input("スキップする行数", value=19, min_value=0, help="ファイルの先頭から無視する行数を指定します（自動認識時は無視されます）。")
-    has_header = st.sidebar.checkbox("ヘッダー(列名)がある", value=True, help="チェックを外すと、スキップ後の1行目からデータとして読み込みます。")
+    skip_rows = st.sidebar.number_input("スキップする行数", value=19, min_value=0, help="デフォルトは19行です。自動認識時は無視されます。")
+    has_header = st.sidebar.checkbox("ヘッダー(列名)がある", value=True)
 
-    # ファイルがアップロードされたら読み込み実行
+    # 読み込み処理
     if uploaded_files:
         st.session_state['data_list'] = load_data(uploaded_files, separator, skip_rows, has_header)
+        init_styles(st.session_state['data_list'])
 
     st.sidebar.markdown("---")
 
-    # --- サイドバー：表示データの選択 (新規追加) ---
+    # --- サイドバー：2. 表示データの選択 ---
     st.sidebar.header("2. 表示データの選択")
     
     selected_labels = []
@@ -167,19 +200,69 @@ def main():
 
     st.sidebar.markdown("---")
 
-    # --- サイドバー：グラフ設定 ---
+    # --- サイドバー：3. グラフ設定 ---
     st.sidebar.header("3. グラフ設定")
     
-    # 前処理設定
+    # 前処理
     st.sidebar.subheader("前処理")
-    do_normalize = st.sidebar.checkbox("正規化 (Min-Max Normalization)", help="各データの最小値を0、最大値を1にスケーリングして表示・保存します。")
+    do_normalize = st.sidebar.checkbox("正規化 (Min-Max Normalization)")
 
-    cmap_options = ['viridis', 'jet', 'coolwarm', 'rainbow', 'plasma', 'Manual']
-    cmap_name = st.sidebar.selectbox("カラーマップ", cmap_options, index=0)
-    legend_loc = st.sidebar.radio("凡例の位置", ('Outside', 'Inside'))
+    # 軸・凡例
+    st.sidebar.subheader("軸・凡例")
     x_label = st.sidebar.text_input("X軸ラベル", "Wavelength (nm)")
     y_label = st.sidebar.text_input("Y軸ラベル", "Norm. Abs." if do_normalize else "Abs.") 
+    legend_loc = st.sidebar.radio("凡例の位置", ('Outside', 'Inside'))
+
+    # スタイル設定
+    st.sidebar.subheader("プロット線スタイル")
+    use_custom_style = st.sidebar.checkbox("個別スタイルを適用する", value=False)
     
+    cmap_name = 'viridis' 
+    if not use_custom_style:
+        cmap_options = ['viridis', 'jet', 'coolwarm', 'rainbow', 'plasma', 'Manual']
+        cmap_name = st.sidebar.selectbox("カラーマップ (自動割り当て)", cmap_options, index=0)
+    else:
+        st.sidebar.markdown("##### 各プロットの詳細設定")
+        if not selected_labels:
+            st.sidebar.warning("ファイルが選択されていません。")
+        else:
+            for label in selected_labels:
+                if label not in st.session_state['styles']:
+                    st.session_state['styles'][label] = {'color': '#000000', 'linewidth': 1.5, 'linestyle': 'Solid (実線)'}
+                
+                with st.sidebar.expander(f"🖊 {label}", expanded=False):
+                    c1, c2 = st.columns(2)
+                    st.session_state['styles'][label]['color'] = c1.color_picker(
+                        "色", st.session_state['styles'][label]['color'], key=f"c_{label}"
+                    )
+                    st.session_state['styles'][label]['linewidth'] = c2.number_input(
+                        "太さ", 0.5, 10.0, st.session_state['styles'][label]['linewidth'], step=0.5, key=f"w_{label}"
+                    )
+                    st.session_state['styles'][label]['linestyle'] = st.selectbox(
+                        "線種", list(LINE_STYLES.keys()), 
+                        index=list(LINE_STYLES.keys()).index(st.session_state['styles'][label]['linestyle']),
+                        key=f"s_{label}"
+                    )
+
+    # グリッド設定 (新規追加)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("グリッド (目盛線) 設定")
+    show_grid = st.sidebar.checkbox("グリッド線を表示", value=True)
+    
+    grid_params = {'color': '#b0b0b0', 'linewidth': 0.8, 'linestyle': ':'}
+    
+    if show_grid:
+        c1, c2, c3 = st.sidebar.columns([1, 1, 2])
+        grid_params['color'] = c1.color_picker("グリッド色", "#b0b0b0")
+        grid_params['linewidth'] = c2.number_input("グリッド太さ", 0.1, 5.0, 0.8, 0.1)
+        
+        # 線種選択 (辞書のキーから選択)
+        grid_ls_key = c3.selectbox("グリッド線種", list(LINE_STYLES.keys()), index=3) # デフォルトはDotted
+        grid_params['linestyle'] = LINE_STYLES[grid_ls_key]
+
+    # 軸範囲
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("軸範囲")
     use_manual_range = st.sidebar.checkbox("軸範囲を手動設定")
     x_min, x_max, y_min, y_max = None, None, None, None
     if use_manual_range:
@@ -196,16 +279,16 @@ def main():
     st.sidebar.markdown("### その他")
     if st.sidebar.button("ダミーデータをロード (Sample 1-7)"):
         st.session_state['data_list'] = generate_dummy_data()
-        st.sidebar.success("ダミーデータを生成しました（上の「表示データの選択」で確認できます）")
-        st.rerun() # データロード後に即時反映させるためリロード
+        init_styles(st.session_state['data_list'])
+        st.sidebar.success("ダミーデータを生成しました")
+        st.rerun()
 
     # --- メインエリア ---
-    # 選択されたデータのみを抽出
     full_data_list = st.session_state['data_list']
     target_data_list = [d for d in full_data_list if d['label'] in selected_labels]
 
     if target_data_list:
-        # --- 表示用データの構築（正規化処理） ---
+        # 表示用データの構築
         display_data_list = []
         for item in target_data_list:
             x_vals = item['x']
@@ -225,26 +308,58 @@ def main():
                 'y': y_vals
             })
 
-        st.subheader(f"Plotting ({len(display_data_list)} samples)")
+        st.subheader(f"プロットプレビュー ({len(display_data_list)} samples)")
         
         fig, ax = plt.subplots(figsize=(10, 6))
         
+        # プロット処理
         num_files = len(display_data_list)
-        if cmap_name == 'Manual':
-            base_colors = ['black', 'red', 'blue', 'green', 'orange', 'purple', 'brown']
-            colors = base_colors * (num_files // len(base_colors) + 1)
+        colors = []
+        
+        if not use_custom_style:
+            # 一括モード
+            if cmap_name == 'Manual':
+                base_colors = ['black', 'red', 'blue', 'green', 'orange', 'purple', 'brown']
+                colors = base_colors * (num_files // len(base_colors) + 1)
+            else:
+                cmap = plt.get_cmap(cmap_name)
+                colors = [cmap(i) for i in np.linspace(0, 1, num_files)]
+            
+            for i, item in enumerate(display_data_list):
+                ax.plot(item['x'], item['y'], label=item['label'], color=colors[i], linewidth=1.5, alpha=0.8)
         else:
-            cmap = plt.get_cmap(cmap_name)
-            colors = [cmap(i) for i in np.linspace(0, 1, num_files)]
+            # 個別モード
+            for item in display_data_list:
+                style = st.session_state['styles'].get(item['label'], {'color':'black', 'linewidth':1.5, 'linestyle':'Solid (実線)'})
+                ls_code = LINE_STYLES.get(style['linestyle'], '-')
+                ax.plot(
+                    item['x'], 
+                    item['y'], 
+                    label=item['label'], 
+                    color=style['color'], 
+                    linewidth=style['linewidth'], 
+                    linestyle=ls_code,
+                    alpha=0.9
+                )
 
-        for i, item in enumerate(display_data_list):
-            ax.plot(item['x'], item['y'], label=item['label'], color=colors[i], linewidth=1.5, alpha=0.8)
-
+        # 装飾
         ax.set_xlabel(x_label, fontsize=12)
         ax.set_ylabel(y_label, fontsize=12)
         ax.tick_params(direction='out', length=6, width=1)
-        ax.grid(True, linestyle=':', alpha=0.5)
         
+        # --- グリッド設定の適用 ---
+        if show_grid:
+            ax.grid(
+                True, 
+                color=grid_params['color'], 
+                linewidth=grid_params['linewidth'], 
+                linestyle=grid_params['linestyle'], 
+                alpha=0.5
+            )
+        else:
+            ax.grid(False)
+        # ------------------------
+
         if use_manual_range:
             ax.set_xlim(x_min, x_max)
             ax.set_ylim(y_min, y_max)
@@ -256,7 +371,7 @@ def main():
 
         st.pyplot(fig)
 
-        # --- ダウンロードエリア ---
+        # --- ダウンロード ---
         st.markdown("---")
         st.subheader("📥 ダウンロード (表示中のデータのみ)")
         
