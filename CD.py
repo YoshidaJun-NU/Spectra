@@ -115,7 +115,7 @@ def create_gnuplot_data(data_list):
 # ---------------------------------------------------------
 def main():
     st.set_page_config(page_title="CD Spectra Plotter Pro", layout="wide", page_icon="🧬")
-    st.title("🧬 CD Spectra Plotter Pro")
+    st.title("🧬 CD Spectra Plotter")
 
     # 全データの格納場所
     if 'raw_data_list' not in st.session_state:
