@@ -3,174 +3,225 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import numpy as np
+import io
 
 # ---------------------------------------------------------
-# 1. データ読み込みと前処理 (Normalization & Encoding Fix)
+# ヘッダー自動検出関数
 # ---------------------------------------------------------
-def load_and_normalize_data(uploaded_file, skip_rows):
+def find_header_row(file_content, encodings=['shift_jis', 'cp932', 'utf-8', 'latin1']):
     """
-    ファイルを読み込み、初期重量を基準に正規化を行う関数
-    Weight(%) = (Wt / W0) * 100
-    対応: 複数のエンコーディング試行、ヘッダー行スキップ
+    ファイルの中身を走査して、データ開始行（ヘッダー）と思われる行番号を返す
     """
-    file_ext = uploaded_file.name.split('.')[-1].lower()
-    df = None
+    for encoding in encodings:
+        try:
+            # バイト列を文字列にデコードして行ごとにリスト化
+            # (大きなファイルの場合は先頭数KBだけ読むのが効率的ですが、テキストファイルなら全読みでもOK)
+            content = file_content.decode(encoding).splitlines()
+            
+            for i, line in enumerate(content[:300]):  # 先頭300行までをチェック
+                # Rigaku形式の特徴: "Time", "Temp", "TG" などが含まれる行を探す
+                # タブ区切りであることが多いため、splitしてみる
+                parts = [p.strip() for p in line.split('\t') if p.strip()]
+                
+                # キーワード判定 (TempとTGまたはTimeが含まれていればヘッダーとみなす)
+                line_str = line.lower()
+                if ('temp' in line_str and 'tg' in line_str) or \
+                   ('time' in line_str and 'temp' in line_str and 'min' in line_str):
+                    return i, encoding, content
+            
+            # 見つからなかった場合
+            return None, encoding, content
+            
+        except UnicodeDecodeError:
+            continue
+            
+    return None, None, None
+
+# ---------------------------------------------------------
+# データ読み込みと前処理
+# ---------------------------------------------------------
+def load_and_normalize_data(uploaded_file, manual_skip_rows, use_auto_detect):
+    """
+    ファイルを読み込み、正規化を行う
+    """
+    file_bytes = uploaded_file.getvalue()
     
-    # 試行するエンコーディングのリスト
-    # 日本の装置は 'shift_jis' や 'cp932' が多い。海外製は 'latin1' など。
-    encodings_to_try = ['utf-8', 'shift_jis', 'cp932', 'latin1']
+    skip_rows = manual_skip_rows
+    encoding = 'shift_jis' # デフォルト
+    header_found = False
     
-    try:
-        if file_ext == 'xlsx':
-            # Excelはエンコーディング指定不要だが、skiprowsは必要
-            df = pd.read_excel(uploaded_file, skiprows=skip_rows)
+    # --- 自動検出ロジック ---
+    if use_auto_detect:
+        detected_row, detected_enc, lines = find_header_row(file_bytes)
+        if detected_row is not None:
+            skip_rows = detected_row
+            encoding = detected_enc
+            header_found = True
+            # st.info(f"{uploaded_file.name}: ヘッダーを {skip_rows + 1} 行目に検出しました (Encoding: {encoding})")
         else:
-            # CSV / TXT の場合、エンコーディングを順番に試す
-            for enc in encodings_to_try:
-                try:
-                    # Streamlitの特性上、読み込み直前にポインタを先頭に戻す必要がある
-                    uploaded_file.seek(0)
-                    
-                    # 読み込み試行
-                    df = pd.read_csv(
-                        uploaded_file, 
-                        sep=None,          # 区切り文字自動判定
-                        engine='python', 
-                        encoding=enc,      # エンコーディング指定
-                        skiprows=skip_rows # ヘッダー行スキップ
-                    )
-                    # 成功したらループを抜ける
-                    break
-                except UnicodeDecodeError:
-                    # このエンコーディングで失敗したら次へ
-                    continue
-                except pd.errors.ParserError:
-                    # パースエラーの場合も次へ（区切り文字等の問題の可能性）
-                    continue
-            
-            # 全てのエンコーディングで失敗した場合
-            if df is None:
-                st.error(f"Error: ファイル {uploaded_file.name} を読み込めませんでした。文字コードまたは形式を確認してください。")
-                return None
-            
-    except Exception as e:
-        st.error(f"予期せぬエラー ({uploaded_file.name}): {e}")
-        return None
+            # 自動検出失敗時は手動設定を使用し、エンコーディングは総当たり
+            pass
+
+    # --- 読み込み実行 ---
+    df = None
+    encodings_to_try = [encoding] if header_found else ['shift_jis', 'cp932', 'utf-8', 'latin1']
     
-    # --- カラム名の簡易クレンジングと特定 ---
-    # 読み込んだデータの列名を確認し、Temp/Weightを特定する
-    # ユーザーのファイルに合わせてロジックを調整してください
+    for enc in encodings_to_try:
+        try:
+            uploaded_file.seek(0)
+            # Rigakuのファイルはタブ区切りが多いが、sep=Noneで自動判定させる
+            # ヘッダー行を特定して読み込む
+            df = pd.read_csv(
+                uploaded_file, 
+                sep=None, 
+                engine='python', 
+                encoding=enc, 
+                skiprows=skip_rows
+            )
+            
+            # 読み込み成功したらループを抜ける
+            break 
+        except Exception:
+            continue
+            
+    if df is None:
+        return None, "読み込みに失敗しました。文字コードまたは形式が不明です。"
+
+    # --- カラム名のクリーニング ---
+    # Rigakuデータは先頭に #GD という列が入ったり、カラム名がずれたりすることがあるため調整
     
-    # すべての列名を文字列型に変換（混在回避）
+    # 1. カラム名を文字列にする
     df.columns = df.columns.astype(str)
     
-    # 必須カラムが含まれているかチェック (大文字小文字を無視して探す)
-    # ここでは仮に、列名に "Temp" や "Weight" (または "mg", "%") が含まれているかを探す簡易ロジック
-    # 実際のデータに合わせて、より厳密に指定することも可能です
+    # 2. 不要な空白を除去
+    df.columns = [c.strip() for c in df.columns]
     
-    # もしカラム名が見つからない、またはデータ構造が単純な場合
-    # 「1列目を温度、2列目を重量」として強制的にリネームする処理
-    if df.shape[1] >= 2:
-        # 元の列名を保持しつつ、内部処理用にリネーム
-        # 実際の解析では、どの列が温度でどの列が重量かを選択させるUIがあるとベスト
-        df.columns.values[0] = 'Temp'
-        df.columns.values[1] = 'Weight'
-        # 残りの列はそのまま
-    else:
-        st.warning(f"{uploaded_file.name}: 列数が不足しています（2列以上必要）。skiprowsの設定を確認してください。")
-        return None
-
-    # 数値型への変換 (文字列として読み込まれている場合への対処)
-    # エラー('errors="coerce"')が発生した値はNaNになる
-    df['Temp'] = pd.to_numeric(df['Temp'], errors='coerce')
-    df['Weight'] = pd.to_numeric(df['Weight'], errors='coerce')
+    # 3. #GD列 (データ行識別子) が混入している場合の処理
+    # データ行が "#GD  Time  Temp..." のようになっていると、
+    # pandasは "#GD" を最初の列名、"Time" を2番目... と解釈してズレることがある
     
-    # NaNを含む行（ヘッダーの残りなど）を削除
-    df = df.dropna(subset=['Temp', 'Weight'])
-
-    # --- [機能: データの正規化] ---
-    if df.empty:
-        st.warning(f"{uploaded_file.name}: 有効なデータ行がありません。")
-        return None
-
-    # 初期値 (W0) を取得
-    w0 = df['Weight'].iloc[0]
+    # "Temp" や "Weight/TG" カラムを探す
+    temp_col = None
+    weight_col = None
     
+    for col in df.columns:
+        c_lower = col.lower()
+        if 'temp' in c_lower and 'dtemp' not in c_lower: # 微分(DTemp)は除外
+            temp_col = col
+        if 'tg' in c_lower and 'dtg' not in c_lower: # 微分(DTG)は除外
+            weight_col = col
+        elif 'weight' in c_lower:
+            weight_col = col
+            
+    # カラムが見つからない場合、列の位置で強制割り当てを試みる
+    # Rigaku形式: 0:タグ, 1:Time, 2:Temp, ... TG ... のパターンが多い
+    if temp_col is None or weight_col is None:
+        if df.shape[1] >= 4:
+            # 一般的なRigaku形式の並びを仮定
+            # [Tag, Time, Temp, DTemp, TG, DTG, DTA...]
+            # カラム名が正しくパースされていない場合、中身で判断するのは難しいので
+            # ユーザーに列選択させるのがベストだが、ここでは簡易的に列番で推定
+            
+            # もし1列目がすべて "#GD" なら、それはタグ列
+            if df.iloc[:, 0].astype(str).str.contains('#GD').all():
+                # 2列目(Time), 3列目(Temp), 5列目(TG) あたりを候補に
+                if df.shape[1] > 2: temp_col = df.columns[2]
+                if df.shape[1] > 4: weight_col = df.columns[4] # TGは後ろの方にあることが多い
+            else:
+                # タグ列がない場合 (CSV等)
+                temp_col = df.columns[0] # 仮
+                weight_col = df.columns[1] # 仮
+    
+    if temp_col is None or weight_col is None:
+        return None, f"温度または重量の列を特定できませんでした。(検出列: {list(df.columns)})"
+
+    # 数値変換 (エラー値はNaNに)
+    df[temp_col] = pd.to_numeric(df[temp_col], errors='coerce')
+    df[weight_col] = pd.to_numeric(df[weight_col], errors='coerce')
+    
+    # NaN行を削除
+    df = df.dropna(subset=[temp_col, weight_col])
+    
+    # 解析用にカラム名を統一
+    df_out = pd.DataFrame({
+        'Temp': df[temp_col],
+        'Weight': df[weight_col]
+    })
+    
+    # --- 正規化 ---
+    if df_out.empty:
+        return None, "有効なデータ行がありません。"
+        
+    w0 = df_out['Weight'].iloc[0]
     if w0 == 0:
-        df['Weight_Norm'] = 0
+        df_out['Weight_Norm'] = 0
     else:
-        df['Weight_Norm'] = (df['Weight'] / w0) * 100
-    
-    return df
+        df_out['Weight_Norm'] = (df_out['Weight'] / w0) * 100
+        
+    return df_out, None
 
 # ---------------------------------------------------------
 # メインアプリケーション
 # ---------------------------------------------------------
 def main():
     st.set_page_config(page_title="TGA Analysis Tool", layout="wide")
-    st.title("TGA Analysis: Visualization & Interpolation")
+    st.title("TGA Analysis Tool")
+    st.markdown("Rigaku形式 (.txt) や CSV/Excel の熱重量分析データをプロット・解析します。")
 
-    # サイドバー設定
-    st.sidebar.header("Settings")
+    # --- サイドバー設定 ---
+    st.sidebar.header("読み込み設定")
     
-    # 1. ヘッダー行のスキップ設定 (データ読み込み前に必要)
-    # テキストファイルの上部に測定条件などが書かれている場合、これを調整してデータ開始行を指定します
-    skip_rows = st.sidebar.number_input(
-        "ヘッダーの行数をスキップ (Skip Rows)", 
-        min_value=0, 
-        max_value=100, 
-        value=0,
-        help="データの開始行がずれている場合、この数値を増やしてください。"
-    )
+    use_auto_header = st.sidebar.checkbox("ヘッダー位置を自動検出", value=True)
+    
+    manual_skip = 0
+    if not use_auto_header:
+        manual_skip = st.sidebar.number_input(
+            "ヘッダーまでのスキップ行数", 
+            min_value=0, 
+            max_value=300, # 上限を拡大
+            value=0,
+            step=1,
+            help="ファイルの先頭からデータ開始位置までの行数を指定します。"
+        )
 
-    # 2. ファイルアップロード
+    st.sidebar.markdown("---")
     uploaded_files = st.sidebar.file_uploader(
-        "データファイルをアップロード (csv, txt, xlsx)", 
+        "ファイルをアップロード", 
         type=['csv', 'txt', 'xlsx'], 
         accept_multiple_files=True
     )
 
     if not uploaded_files:
-        st.info("左のサイドバーからTGAデータファイルをアップロードしてください。")
-        st.markdown("""
-        **ヒント:** - テキストファイルの読み込みエラーが出る場合は、**「ヘッダーの行数をスキップ」** の値を増やしてみてください。
-        - 日本語(Shift-JIS)のファイルも自動判定して読み込みます。
-        """)
+        st.info("サイドバーからファイルをアップロードしてください。")
         return
 
-    # データを格納する辞書
+    # データ処理ループ
     data_dict = {}
     
-    # ファイル読み込みループ
     for file in uploaded_files:
-        # ここで skip_rows を渡す
-        df = load_and_normalize_data(file, skip_rows)
+        df, error = load_and_normalize_data(file, manual_skip, use_auto_header)
         if df is not None:
             data_dict[file.name] = df
+        else:
+            st.error(f"{file.name}: {error}")
 
     if not data_dict:
         return
 
-    # ---------------------------------------------------------
-    # 2. 柔軟なスタイル設定
-    # ---------------------------------------------------------
-    st.subheader("1. Comparison Plot (Normalized)")
+    # --- 1. プロット ---
+    st.subheader("1. データ比較プロット")
     
     palette = px.colors.qualitative.Plotly
-    styles = {}
-    for i, filename in enumerate(data_dict.keys()):
-        color = palette[i % len(palette)]
-        styles[filename] = {'color': color}
+    styles = {name: palette[i % len(palette)] for i, name in enumerate(data_dict.keys())}
 
     fig = go.Figure()
-
     for filename, df in data_dict.items():
         fig.add_trace(go.Scatter(
             x=df['Temp'],
             y=df['Weight_Norm'],
             mode='lines',
             name=filename,
-            line=dict(color=styles[filename]['color'])
+            line=dict(color=styles[filename])
         ))
 
     fig.update_layout(
@@ -182,49 +233,38 @@ def main():
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ---------------------------------------------------------
-    # 3. 2点間解析
-    # ---------------------------------------------------------
-    st.markdown("---")
-    st.subheader("2. Precise Analysis (Linear Interpolation)")
+    # --- 2. 解析 ---
+    st.subheader("2. 数値解析 (線形補間)")
     
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("#### A. 指定温度 → 重量(%)")
-        target_temp = st.number_input("温度を入力 (°C)", value=300.0, step=10.0)
-        
-        results_a = []
-        for filename, df in data_dict.items():
-            if target_temp < df['Temp'].min() or target_temp > df['Temp'].max():
-                calc_weight_str = "Out of Range"
+    c1, c2 = st.columns(2)
+    
+    # 指定温度 -> 重量
+    with c1:
+        st.markdown("##### 指定温度における重量残存率 (%)")
+        t_target = st.number_input("温度 (°C)", value=500.0, step=10.0)
+        res_a = []
+        for name, df in data_dict.items():
+            if t_target < df['Temp'].min() or t_target > df['Temp'].max():
+                val = "範囲外"
             else:
-                calc_weight = np.interp(target_temp, df['Temp'], df['Weight_Norm'])
-                calc_weight_str = f"{calc_weight:.2f}"
-            
-            results_a.append({"File": filename, "Weight (%)": calc_weight_str})
-        
-        st.table(pd.DataFrame(results_a))
+                val = f"{np.interp(t_target, df['Temp'], df['Weight_Norm']):.2f}"
+            res_a.append({"File": name, "Weight (%)": val})
+        st.table(pd.DataFrame(res_a))
 
-    with col2:
-        st.markdown("#### B. 指定重量(%) → 温度")
-        target_weight = st.number_input("重量(%)を入力", value=95.0, step=1.0)
-        
-        results_b = []
-        for filename, df in data_dict.items():
-            # 重量の昇順ソート（補間のため）
-            df_sorted = df.sort_values(by='Weight_Norm')
-            
-            # 範囲外チェック
-            if target_weight < df_sorted['Weight_Norm'].min() or target_weight > df_sorted['Weight_Norm'].max():
-                calc_temp_str = "Out of Range"
+    # 指定重量 -> 温度
+    with c2:
+        st.markdown("##### 指定重量残存率における温度 (°C)")
+        w_target = st.number_input("重量 (%)", value=95.0, step=1.0)
+        res_b = []
+        for name, df in data_dict.items():
+            # 重量でソートしないとinterpできない
+            df_s = df.sort_values('Weight_Norm')
+            if w_target < df_s['Weight_Norm'].min() or w_target > df_s['Weight_Norm'].max():
+                val = "範囲外"
             else:
-                calc_temp = np.interp(target_weight, df_sorted['Weight_Norm'], df_sorted['Temp'])
-                calc_temp_str = f"{calc_temp:.2f}"
-                
-            results_b.append({"File": filename, "Temp (°C)": calc_temp_str})
-            
-        st.table(pd.DataFrame(results_b))
+                val = f"{np.interp(w_target, df_s['Weight_Norm'], df_s['Temp']):.2f}"
+            res_b.append({"File": name, "Temp (°C)": val})
+        st.table(pd.DataFrame(res_b))
 
 if __name__ == "__main__":
     main()
