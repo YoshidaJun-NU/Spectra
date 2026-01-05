@@ -9,7 +9,6 @@ from matplotlib.lines import Line2D
 # ---------------------------------------------------------
 # 定数・マッピング
 # ---------------------------------------------------------
-# 線種の選択肢とMatplotlibの記号のマッピング
 LINE_STYLES = {
     "実線 (Solid)": '-',
     "破線 (Dashed)": '--',
@@ -78,12 +77,9 @@ def load_vcd_data(uploaded_file, sep_char, skip_rows, skip_footer, col_indices, 
         return None
 
 # ---------------------------------------------------------
-# 関数: Gnuplotパッケージ作成 (スタイル反映版)
+# 関数: Gnuplotパッケージ作成
 # ---------------------------------------------------------
 def create_gnuplot_package(delta_list, lambda_list, x_lim, vcd_lim, ir_lim, scale_factor, legend_pos, styles):
-    """
-    styles: ユーザーが選択した色や設定を含む辞書
-    """
     all_x = []
     for d in delta_list + lambda_list: all_x.extend(d['x'])
     if not all_x: return None
@@ -116,17 +112,14 @@ def create_gnuplot_package(delta_list, lambda_list, x_lim, vcd_lim, ir_lim, scal
 
     data_str = df_out.to_csv(sep='\t', index=False, float_format='%.5f')
 
-    # Gnuplot legend setting
     key_setting = "set key top left" if "内部" in legend_pos else "set key outside right top"
 
     plot_cmds = []
     curr = 2
     for item in col_names:
-        # ユーザー選択の色を反映
         c = styles['delta_color'] if item['type'] == 'Delta' else styles['lambda_color']
         t = item['label'].replace('_', '\\_')
         
-        # NOTE: Gnuplotの線種(dt)は複雑になるため、ここでは標準的な VCD=実線(1), IR=点線(2) としています
         plot_cmds.append(f"'data.dat' u 1:{curr} axes x1y2 w l lc rgb '{c}' dt 2 notitle") 
         plot_cmds.append(f"'data.dat' u 1:{curr+1} axes x1y1 w l lc rgb '{c}' dt 1 title '{t} ({item['type']})'")
         curr += 2
@@ -214,6 +207,32 @@ def main():
         temp = [load_vcd_data(f, sep_char, skip_row, skip_footer, col_indices, encoding_type) for f in up_lambda]
         st.session_state['lambda_data'] = [t for t in temp if t]
 
+    # --- ファイル選択機能 ---
+    delta_to_plot = []
+    lambda_to_plot = []
+
+    if st.session_state['delta_data']:
+        st.sidebar.markdown("#### 表示ファイルの選択 (Sample 1)")
+        delta_filenames = [d['filename'] for d in st.session_state['delta_data']]
+        selected_delta_names = st.sidebar.multiselect(
+            "Sample 1 (Delta) 一覧", 
+            options=delta_filenames, 
+            default=delta_filenames,
+            key='sel_delta'
+        )
+        delta_to_plot = [d for d in st.session_state['delta_data'] if d['filename'] in selected_delta_names]
+
+    if st.session_state['lambda_data']:
+        st.sidebar.markdown("#### 表示ファイルの選択 (Sample 2)")
+        lambda_filenames = [d['filename'] for d in st.session_state['lambda_data']]
+        selected_lambda_names = st.sidebar.multiselect(
+            "Sample 2 (Lambda) 一覧", 
+            options=lambda_filenames, 
+            default=lambda_filenames,
+            key='sel_lambda'
+        )
+        lambda_to_plot = [d for d in st.session_state['lambda_data'] if d['filename'] in selected_lambda_names]
+
     # --- 3. グラフ軸設定 ---
     st.sidebar.markdown("---")
     st.sidebar.header("3. グラフ軸設定")
@@ -239,19 +258,17 @@ def main():
     st.sidebar.markdown("#### 凡例 (Legend)")
     legend_pos = st.sidebar.radio("位置を選択:", ["内部 (左上)", "外部 (右側)"], index=0)
 
-    # --- 4. グラフスタイル設定 (New!) ---
+    # --- 4. グラフスタイル設定 ---
     st.sidebar.markdown("---")
     st.sidebar.header("4. グラフスタイル設定")
 
-    # Delta Styles
     with st.sidebar.expander("Sample 1 (Delta) のスタイル", expanded=True):
         c1, c2 = st.columns(2)
         d_color = c1.color_picker("色 (Color)", '#8B0000', key='dc')
         d_width = c2.number_input("線幅", value=1.5, step=0.1, key='dw')
         d_style_vcd_key = st.selectbox("VCD 線種", list(LINE_STYLES.keys()), index=0, key='dsv')
-        d_style_ir_key = st.selectbox("IR 線種", list(LINE_STYLES.keys()), index=2, key='dsi') # デフォルト点線
+        d_style_ir_key = st.selectbox("IR 線種", list(LINE_STYLES.keys()), index=2, key='dsi')
 
-    # Lambda Styles
     with st.sidebar.expander("Sample 2 (Lambda) のスタイル", expanded=True):
         c1, c2 = st.columns(2)
         l_color = c1.color_picker("色 (Color)", '#00008B', key='lc')
@@ -259,7 +276,6 @@ def main():
         l_style_vcd_key = st.selectbox("VCD 線種", list(LINE_STYLES.keys()), index=0, key='lsv')
         l_style_ir_key = st.selectbox("IR 線種", list(LINE_STYLES.keys()), index=2, key='lsi')
 
-    # スタイル情報を辞書にまとめる
     user_styles = {
         'delta_color': d_color,
         'delta_width': d_width,
@@ -271,85 +287,147 @@ def main():
         'lambda_ir_ls': LINE_STYLES[l_style_ir_key]
     }
 
-    # --- プロット描画 ---
-    delta_data = st.session_state['delta_data']
-    lambda_data = st.session_state['lambda_data']
+    # --- プロット描画 (Tab分岐) ---
+    if delta_to_plot or lambda_to_plot:
+        
+        tab1, tab2, tab3 = st.tabs(["重ね合わせ (Dual)", "VCDのみ", "IRのみ"])
 
-    if delta_data or lambda_data:
-        fig, ax1 = plt.subplots(figsize=(10, 6))
-        ax2 = ax1.twinx()
+        # =========================================================
+        # Tab 1: Combined Dual Axis (Existing)
+        # =========================================================
+        with tab1:
+            fig1, ax1 = plt.subplots(figsize=(10, 6))
+            ax2 = ax1.twinx()
 
-        # ゼロ線 (薄く変更)
-        ax1.axhline(0, color='gray', linewidth=0.5, linestyle='-', zorder=1)
+            ax1.axhline(0, color='gray', linewidth=0.5, linestyle='-', zorder=1)
 
-        def plot_item(ax_vcd, ax_ir, item, color, width, vcd_ls, ir_ls, scale):
-            # VCD
-            ax_vcd.plot(item['x'], item['vcd'] * scale, 
-                        color=color, linestyle=vcd_ls, linewidth=width, zorder=3)
-            # IR
-            ax_ir.plot(item['x'], item['ir'] * scale, 
-                       color=color, linestyle=ir_ls, linewidth=width, alpha=0.7, zorder=2)
+            # Combined Logic
+            def plot_dual(item, color, width, vcd_ls, ir_ls, scale):
+                ax1.plot(item['x'], item['vcd'] * scale, 
+                         color=color, linestyle=vcd_ls, linewidth=width, zorder=3)
+                ax2.plot(item['x'], item['ir'] * scale, 
+                         color=color, linestyle=ir_ls, linewidth=width, alpha=0.7, zorder=2)
 
-        # Delta Plot
-        for item in delta_data:
-            plot_item(ax1, ax2, item, 
-                      user_styles['delta_color'], user_styles['delta_width'],
-                      user_styles['delta_vcd_ls'], user_styles['delta_ir_ls'],
-                      scale_factor)
+            for item in delta_to_plot:
+                plot_dual(item, d_color, d_width, user_styles['delta_vcd_ls'], user_styles['delta_ir_ls'], scale_factor)
+            for item in lambda_to_plot:
+                plot_dual(item, l_color, l_width, user_styles['lambda_vcd_ls'], user_styles['lambda_ir_ls'], scale_factor)
+
+            ax1.set_xlabel("Wavenumber ($cm^{-1}$)", fontsize=12)
+            ax1.set_ylabel(f"VCD Intensity (x{scale_factor})", fontsize=12)
+            ax2.set_ylabel(f"Absorbance (x{scale_factor})", fontsize=12)
+
+            ax1.set_xlim(x_high, x_low)
+            if man_vcd: ax1.set_ylim(vcd_min, vcd_max)
+            if man_ir: ax2.set_ylim(ir_min, ir_max)
+
+            # Legend for Combined
+            legend_elements_1 = [
+                Line2D([0], [0], color=d_color, lw=d_width, linestyle=user_styles['delta_vcd_ls'], label='Sample 1 (Delta) VCD'),
+                Line2D([0], [0], color=d_color, lw=d_width, linestyle=user_styles['delta_ir_ls'], label='Sample 1 (Delta) IR'),
+                Line2D([0], [0], color=l_color, lw=l_width, linestyle=user_styles['lambda_vcd_ls'], label='Sample 2 (Lambda) VCD'),
+                Line2D([0], [0], color=l_color, lw=l_width, linestyle=user_styles['lambda_ir_ls'], label='Sample 2 (Lambda) IR'),
+            ]
             
-        # Lambda Plot
-        for item in lambda_data:
-            plot_item(ax1, ax2, item, 
-                      user_styles['lambda_color'], user_styles['lambda_width'],
-                      user_styles['lambda_vcd_ls'], user_styles['lambda_ir_ls'],
-                      scale_factor)
+            if "内部" in legend_pos:
+                ax1.legend(handles=legend_elements_1, loc='upper left', framealpha=0.9)
+            else:
+                ax1.legend(handles=legend_elements_1, loc='upper left', bbox_to_anchor=(1.15, 1.0), borderaxespad=0.)
 
-        ax1.set_xlabel("Wavenumber ($cm^{-1}$)", fontsize=12)
-        ax1.set_ylabel(f"VCD Intensity (x{scale_factor})", fontsize=12)
-        ax2.set_ylabel(f"Absorbance (x{scale_factor})", fontsize=12)
-
-        ax1.set_xlim(x_high, x_low)
-        if man_vcd: ax1.set_ylim(vcd_min, vcd_max)
-        if man_ir: ax2.set_ylim(ir_min, ir_max)
-
-        # 凡例 (動的生成)
-        legend_elements = [
-            Line2D([0], [0], color=user_styles['delta_color'], lw=user_styles['delta_width'], 
-                   linestyle=user_styles['delta_vcd_ls'], label='Sample 1 (Delta) VCD'),
-            Line2D([0], [0], color=user_styles['delta_color'], lw=user_styles['delta_width'], 
-                   linestyle=user_styles['delta_ir_ls'], label='Sample 1 (Delta) IR'),
+            st.pyplot(fig1)
             
-            Line2D([0], [0], color=user_styles['lambda_color'], lw=user_styles['lambda_width'], 
-                   linestyle=user_styles['lambda_vcd_ls'], label='Sample 2 (Lambda) VCD'),
-            Line2D([0], [0], color=user_styles['lambda_color'], lw=user_styles['lambda_width'], 
-                   linestyle=user_styles['lambda_ir_ls'], label='Sample 2 (Lambda) IR'),
-        ]
+            # Download Combined
+            c1, c2 = st.columns(2)
+            buf1 = io.BytesIO()
+            fig1.savefig(buf1, format='png', dpi=300, bbox_inches='tight')
+            buf1.seek(0)
+            c1.download_button("画像 (PNG) - Dual", buf1, "vcd_dual.png", "image/png")
+            
+            # Gnuplot Package (Combined Data)
+            zip_dat = create_gnuplot_package(
+                delta_to_plot, lambda_to_plot, 
+                (x_high, x_low), (vcd_min, vcd_max), (ir_min, ir_max),
+                scale_factor, legend_pos, user_styles
+            )
+            if zip_dat:
+                c2.download_button("Gnuplotデータ (.zip)", zip_dat, "vcd_dual_gnuplot.zip", "application/zip")
 
-        # 凡例位置
-        if "内部" in legend_pos:
-            ax1.legend(handles=legend_elements, loc='upper left', framealpha=0.9)
-        else:
-            ax1.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.15, 1.0), borderaxespad=0.)
+        # =========================================================
+        # Tab 2: VCD Only
+        # =========================================================
+        with tab2:
+            fig2, ax_vcd = plt.subplots(figsize=(10, 6))
+            ax_vcd.axhline(0, color='gray', linewidth=0.5, linestyle='-', zorder=1)
 
-        st.pyplot(fig)
+            for item in delta_to_plot:
+                ax_vcd.plot(item['x'], item['vcd'] * scale_factor, 
+                            color=d_color, linestyle=user_styles['delta_vcd_ls'], linewidth=d_width, label='Sample 1 (Delta)')
+            for item in lambda_to_plot:
+                ax_vcd.plot(item['x'], item['vcd'] * scale_factor, 
+                            color=l_color, linestyle=user_styles['lambda_vcd_ls'], linewidth=l_width, label='Sample 2 (Lambda)')
 
-        st.markdown("---")
-        c1, c2 = st.columns(2)
-        buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
-        buf.seek(0)
-        c1.download_button("画像 (PNG)", buf, "vcd_dual.png", "image/png")
+            ax_vcd.set_xlabel("Wavenumber ($cm^{-1}$)", fontsize=12)
+            ax_vcd.set_ylabel(f"VCD Intensity (x{scale_factor})", fontsize=12)
+            ax_vcd.set_xlim(x_high, x_low)
+            if man_vcd: ax_vcd.set_ylim(vcd_min, vcd_max)
+            
+            # Legend VCD
+            legend_elements_2 = [
+                Line2D([0], [0], color=d_color, lw=d_width, linestyle=user_styles['delta_vcd_ls'], label='Sample 1 (Delta)'),
+                Line2D([0], [0], color=l_color, lw=l_width, linestyle=user_styles['lambda_vcd_ls'], label='Sample 2 (Lambda)'),
+            ]
 
-        zip_dat = create_gnuplot_package(
-            delta_data, lambda_data, 
-            (x_high, x_low), (vcd_min, vcd_max), (ir_min, ir_max),
-            scale_factor, legend_pos, user_styles
-        )
-        if zip_dat:
-            c2.download_button("Gnuplotデータ (.zip)", zip_dat, "vcd_dual_gnuplot.zip", "application/zip")
+            if "内部" in legend_pos:
+                ax_vcd.legend(handles=legend_elements_2, loc='upper left', framealpha=0.9)
+            else:
+                ax_vcd.legend(handles=legend_elements_2, loc='upper left', bbox_to_anchor=(1.05, 1.0), borderaxespad=0.)
+
+            st.pyplot(fig2)
+
+            buf2 = io.BytesIO()
+            fig2.savefig(buf2, format='png', dpi=300, bbox_inches='tight')
+            buf2.seek(0)
+            st.download_button("画像 (PNG) - VCDのみ", buf2, "vcd_only.png", "image/png")
+
+        # =========================================================
+        # Tab 3: IR Only
+        # =========================================================
+        with tab3:
+            fig3, ax_ir = plt.subplots(figsize=(10, 6))
+            ax_ir.axhline(0, color='gray', linewidth=0.5, linestyle='-', zorder=1)
+
+            for item in delta_to_plot:
+                ax_ir.plot(item['x'], item['ir'] * scale_factor, 
+                           color=d_color, linestyle=user_styles['delta_ir_ls'], linewidth=d_width, label='Sample 1 (Delta)')
+            for item in lambda_to_plot:
+                ax_ir.plot(item['x'], item['ir'] * scale_factor, 
+                           color=l_color, linestyle=user_styles['lambda_ir_ls'], linewidth=l_width, label='Sample 2 (Lambda)')
+
+            ax_ir.set_xlabel("Wavenumber ($cm^{-1}$)", fontsize=12)
+            ax_ir.set_ylabel(f"Absorbance (x{scale_factor})", fontsize=12)
+            ax_ir.set_xlim(x_high, x_low)
+            if man_ir: ax_ir.set_ylim(ir_min, ir_max)
+
+            # Legend IR
+            legend_elements_3 = [
+                Line2D([0], [0], color=d_color, lw=d_width, linestyle=user_styles['delta_ir_ls'], label='Sample 1 (Delta)'),
+                Line2D([0], [0], color=l_color, lw=l_width, linestyle=user_styles['lambda_ir_ls'], label='Sample 2 (Lambda)'),
+            ]
+
+            if "内部" in legend_pos:
+                ax_ir.legend(handles=legend_elements_3, loc='upper left', framealpha=0.9)
+            else:
+                ax_ir.legend(handles=legend_elements_3, loc='upper left', bbox_to_anchor=(1.05, 1.0), borderaxespad=0.)
+
+            st.pyplot(fig3)
+
+            buf3 = io.BytesIO()
+            fig3.savefig(buf3, format='png', dpi=300, bbox_inches='tight')
+            buf3.seek(0)
+            st.download_button("画像 (PNG) - IRのみ", buf3, "ir_only.png", "image/png")
             
     else:
-        st.info("👈 データの設定を行い、ファイルをアップロードしてください。")
+        st.info("👈 ファイルをアップロードし、表示するファイルを選択してください。")
 
 if __name__ == "__main__":
     main()
