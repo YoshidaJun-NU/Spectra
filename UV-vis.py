@@ -166,14 +166,18 @@ def main():
     # --- サイドバー：1. データ読み込み設定 ---
     st.sidebar.header("1. データ読み込み設定")
     
-    # 1. ファイルアップロード
-    uploaded_files = st.sidebar.file_uploader("ファイルをアップロード", accept_multiple_files=True, type=['txt', 'csv', 'dat'])
+    # 1. ファイルアップロード (spzを追加)
+    uploaded_files = st.sidebar.file_uploader(
+        "ファイルをアップロード", 
+        accept_multiple_files=True, 
+        type=['txt', 'csv', 'dat', 'spz']
+    )
 
     # 2. フォーマット指定
     st.sidebar.subheader("フォーマット指定")
     st.sidebar.caption("※ 'XYDATA' を含むファイルは自動認識されます。")
     
-    separator = st.sidebar.radio("区切り文字", ('comma', 'tab'), index=1, format_func=lambda x: "カンマ (CSV)" if x=='comma' else "タブ (TXT/DAT)")
+    separator = st.sidebar.radio("区切り文字", ('comma', 'tab'), index=1, format_func=lambda x: "カンマ (CSV)" if x=='comma' else "タブ (TXT/DAT/SPZ)")
     skip_rows = st.sidebar.number_input("スキップする行数", value=19, min_value=0, help="デフォルトは19行です。自動認識時は無視されます。")
     has_header = st.sidebar.checkbox("ヘッダー(列名)がある", value=True)
 
@@ -244,7 +248,7 @@ def main():
                         key=f"s_{label}"
                     )
 
-    # グリッド設定 (新規追加)
+    # グリッド設定
     st.sidebar.markdown("---")
     st.sidebar.subheader("グリッド (目盛線) 設定")
     show_grid = st.sidebar.checkbox("グリッド線を表示", value=True)
@@ -255,8 +259,6 @@ def main():
         c1, c2, c3 = st.sidebar.columns([1, 1, 2])
         grid_params['color'] = c1.color_picker("グリッド色", "#b0b0b0")
         grid_params['linewidth'] = c2.number_input("グリッド太さ", 0.1, 5.0, 0.8, 0.1)
-        
-        # 線種選択 (辞書のキーから選択)
         grid_ls_key = c3.selectbox("グリッド線種", list(LINE_STYLES.keys()), index=3) # デフォルトはDotted
         grid_params['linestyle'] = LINE_STYLES[grid_ls_key]
 
@@ -308,7 +310,7 @@ def main():
                 'y': y_vals
             })
 
-        st.subheader(f"plotting ({len(display_data_list)} samples)")
+        st.subheader(f"プロットプレビュー ({len(display_data_list)} samples)")
         
         fig, ax = plt.subplots(figsize=(10, 6))
         
@@ -358,7 +360,6 @@ def main():
             )
         else:
             ax.grid(False)
-        # ------------------------
 
         if use_manual_range:
             ax.set_xlim(x_min, x_max)
