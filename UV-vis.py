@@ -63,12 +63,10 @@ def load_data(uploaded_files, separator, skip_rows, has_header):
             use_header = 0 if has_header else None
             
             # --- 3. ファイル構造の解析 (XYDATA検出など) ---
-            # デコード済みのテキスト内で検索
             if 'XYDATA' in decoded_text:
                 lines = decoded_text.splitlines()
                 for i, line in enumerate(lines):
                     if 'XYDATA' in line:
-                        # XYDATAのある行の"次の行"からデータが始まるとみなす
                         use_skip = i + 1
                         use_header = None 
                         use_sep = '\t'
@@ -136,20 +134,15 @@ def main():
     # --- サイドバー：データ設定 ---
     st.sidebar.header("1. データ読み込み設定")
     
-    # 1. ファイルアップロード (最上部へ移動)
-    # デフォルトファイルタイプを txt 先頭に変更
+    # 1. ファイルアップロード
     uploaded_files = st.sidebar.file_uploader("ファイルをアップロード", accept_multiple_files=True, type=['txt', 'csv', 'dat'])
 
     # 2. フォーマット指定
     st.sidebar.subheader("フォーマット指定")
     st.sidebar.caption("※ 'XYDATA' を含むファイルは自動認識されます。")
     
-    # 区切り文字のデフォルトを「タブ」に変更 (index=1)
     separator = st.sidebar.radio("区切り文字", ('comma', 'tab'), index=1, format_func=lambda x: "カンマ (CSV)" if x=='comma' else "タブ (TXT/DAT)")
-    
-    # スキップ行数のデフォルトを 19 に変更
     skip_rows = st.sidebar.number_input("スキップする行数", value=19, min_value=0, help="ファイルの先頭から無視する行数を指定します（自動認識時は無視されます）。")
-    
     has_header = st.sidebar.checkbox("ヘッダー(列名)がある", value=True, help="チェックを外すと、スキップ後の1行目からデータとして読み込みます。")
 
     # ファイルがアップロードされたら読み込み実行
@@ -158,8 +151,24 @@ def main():
 
     st.sidebar.markdown("---")
 
+    # --- サイドバー：表示データの選択 (新規追加) ---
+    st.sidebar.header("2. 表示データの選択")
+    
+    selected_labels = []
+    if st.session_state['data_list']:
+        all_labels = [d['label'] for d in st.session_state['data_list']]
+        selected_labels = st.sidebar.multiselect(
+            "プロットするファイルを選択",
+            options=all_labels,
+            default=all_labels
+        )
+    else:
+        st.sidebar.info("データを読み込むとここにリストが表示されます。")
+
+    st.sidebar.markdown("---")
+
     # --- サイドバー：グラフ設定 ---
-    st.sidebar.header("2. グラフ設定")
+    st.sidebar.header("3. グラフ設定")
     
     # 前処理設定
     st.sidebar.subheader("前処理")
@@ -182,21 +191,23 @@ def main():
         y_min = c1.number_input("Y Min", value=default_ymin)
         y_max = c2.number_input("Y Max", value=default_ymax)
 
-    # --- ダミーデータ生成コマンド (左下に移動) ---
+    # --- ダミーデータ生成コマンド ---
     st.sidebar.markdown("---")
     st.sidebar.markdown("### その他")
     if st.sidebar.button("ダミーデータをロード (Sample 1-7)"):
         st.session_state['data_list'] = generate_dummy_data()
-        st.sidebar.success("ダミーデータを生成しました")
-
+        st.sidebar.success("ダミーデータを生成しました（上の「表示データの選択」で確認できます）")
+        st.rerun() # データロード後に即時反映させるためリロード
 
     # --- メインエリア ---
-    raw_data_list = st.session_state['data_list']
+    # 選択されたデータのみを抽出
+    full_data_list = st.session_state['data_list']
+    target_data_list = [d for d in full_data_list if d['label'] in selected_labels]
 
-    if raw_data_list:
+    if target_data_list:
         # --- 表示用データの構築（正規化処理） ---
         display_data_list = []
-        for item in raw_data_list:
+        for item in target_data_list:
             x_vals = item['x']
             y_vals = item['y'].copy()
             
@@ -214,7 +225,7 @@ def main():
                 'y': y_vals
             })
 
-        st.subheader(f"プロットプレビュー ({len(display_data_list)} samples)")
+        st.subheader(f"Plotting ({len(display_data_list)} samples)")
         
         fig, ax = plt.subplots(figsize=(10, 6))
         
@@ -247,7 +258,7 @@ def main():
 
         # --- ダウンロードエリア ---
         st.markdown("---")
-        st.subheader("📥 ダウンロード")
+        st.subheader("📥 ダウンロード (表示中のデータのみ)")
         
         col1, col2, col3 = st.columns(3)
 
@@ -267,7 +278,10 @@ def main():
             col3.download_button(f"データファイル ({fname})", data=gnu_data, file_name=fname, mime="text/plain")
             
     else:
-        st.info("👈 左側のサイドバーからファイルをアップロードしてください。")
+        if full_data_list:
+             st.warning("👈 サイドバーで表示するファイルを選択してください。")
+        else:
+             st.info("👈 左側のサイドバーからファイルをアップロードしてください。")
 
 if __name__ == "__main__":
     main()
