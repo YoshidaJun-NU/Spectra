@@ -46,7 +46,6 @@ def load_data(uploaded_files, separator, skip_rows, has_header):
             sep_char = '\t' if separator == 'tab' else ','
             header_setting = 0 if has_header else None
             
-            # エンコーディング対応が必要な場合は encoding='shift_jis' などを検討
             df = pd.read_csv(uploaded_file, sep=sep_char, skiprows=skip_rows, header=header_setting)
             
             df = df.apply(pd.to_numeric, errors='coerce')
@@ -118,24 +117,23 @@ def main():
     st.set_page_config(page_title="CD Spectra Plotter Pro", layout="wide", page_icon="🧬")
     st.title("🧬 CD Spectra Plotter Pro")
 
+    # 全データの格納場所
     if 'raw_data_list' not in st.session_state:
         st.session_state['raw_data_list'] = []
 
-    # --- Sidebar: データ入力 ---
+    # --- Sidebar 1: データ入力 ---
     with st.sidebar:
         st.header("1. データ読み込み")
         col_load1, col_load2 = st.columns(2)
         if col_load1.button("サンプルデータ"):
             st.session_state['raw_data_list'] = generate_cd_dummy_data()
-            st.success("サンプル読込完了")
+            st.success("ロード完了")
         
         if col_load2.button("クリア"):
             st.session_state['raw_data_list'] = []
             st.rerun()
 
-        st.markdown("---")
         with st.expander("CSV/TXT 読み込み設定", expanded=True):
-            # ▼ 修正箇所: デフォルトをタブにし、表示を見やすくしました
             separator = st.radio(
                 "区切り文字", 
                 ('tab', 'comma'), 
@@ -143,45 +141,66 @@ def main():
                 horizontal=True,
                 format_func=lambda x: "Tab (TXT)" if x == 'tab' else "Comma (CSV)"
             )
-            
-            skip_rows = st.number_input("ヘッダー前のスキップ行", value=19, min_value=0)
-            has_header = st.checkbox("ヘッダー行あり", value=True)
+            skip_rows = st.number_input("スキップ行数", value=19, min_value=0)
+            has_header = st.checkbox("ヘッダーあり", value=True)
             
             uploaded_files = st.file_uploader("ファイルをアップロード", accept_multiple_files=True)
             if uploaded_files:
                 loaded = load_data(uploaded_files, separator, skip_rows, has_header)
                 if loaded:
+                    # 既存リストに追加するか、置換するか。ここでは追記型にします。
+                    # 同じ名前のファイルが来るとややこしいので、一括置換型（上書き）の挙動にします
                     st.session_state['raw_data_list'] = loaded
 
-    # --- Sidebar: データ処理 ---
+    # --- Sidebar 2: データ選択 (New!) ---
+    target_data = [] # プロット対象リスト
+    if st.session_state['raw_data_list']:
+        st.sidebar.markdown("---")
+        st.sidebar.header("2. 表示データの選択")
+        
+        # 全ラベルのリストを取得
+        all_labels = [d['label'] for d in st.session_state['raw_data_list']]
+        
+        # マルチセレクトで表示するデータを選ぶ
+        selected_labels = st.sidebar.multiselect(
+            "プロットする系列を選んでください",
+            options=all_labels,
+            default=all_labels # デフォルトは全選択
+        )
+        
+        # 選択されたラベルに対応するデータだけを抽出
+        target_data = [d for d in st.session_state['raw_data_list'] if d['label'] in selected_labels]
+
+    # --- Sidebar 3: データ処理 ---
     with st.sidebar:
-        st.header("2. データ処理")
+        st.header("3. データ処理")
         
         smooth_window = st.slider(
             "平滑化 (Window Size)", 
             min_value=1, max_value=21, value=1, step=2,
-            help="Savitzky-Golayフィルタによるノイズ除去"
+            help="Savitzky-Golayフィルタ。奇数推奨。"
         )
 
         use_offset = st.checkbox("ゼロ点補正 (Offset Correction)")
         offset_wl = 350.0
         if use_offset:
-            offset_wl = st.number_input("ゼロ点とする波長 (nm)", value=350.0, step=1.0)
+            offset_wl = st.number_input("ゼロ点波長 (nm)", value=350.0, step=1.0)
 
-    if st.session_state['raw_data_list']:
-        plot_data = process_data(st.session_state['raw_data_list'], smooth_window, use_offset, offset_wl)
+    # 選択されたデータ(target_data)に対して処理を実行
+    if target_data:
+        plot_data = process_data(target_data, smooth_window, use_offset, offset_wl)
     else:
         plot_data = []
 
-    # --- Sidebar: グラフ設定 ---
+    # --- Sidebar 4: グラフ設定 ---
     with st.sidebar:
-        st.header("3. グラフスタイル")
+        st.header("4. グラフスタイル")
         
         x_label = st.text_input("X軸ラベル", "Wavelength (nm)")
         y_label = st.text_input("Y軸ラベル", "Ellipticity (mdeg)")
         
-        with st.expander("軸範囲の手動設定"):
-            use_manual_range = st.checkbox("有効にする")
+        with st.expander("軸範囲設定"):
+            use_manual_range = st.checkbox("手動設定")
             c1, c2 = st.columns(2)
             x_min = c1.number_input("X Min", value=190.0)
             x_max = c2.number_input("X Max", value=260.0)
@@ -195,15 +214,17 @@ def main():
         if plot_data:
             if style_mode == "Manual":
                 st.markdown("##### 個別ライン設定")
+                st.caption("※表示中のデータのみ設定可能です")
                 line_style_dict = {'Solid': '-', 'Dash': '--', 'Dot': ':', 'DashDot': '-.'}
                 default_cols = ['#1f77b4', '#d62728', '#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
                 
                 for i, item in enumerate(plot_data):
                     with st.expander(f"{item['label']}", expanded=False):
                         c1, c2 = st.columns(2)
-                        col = c1.color_picker("色", default_cols[i % len(default_cols)], key=f"c_{i}")
-                        lw = c2.number_input("太さ", 1.0, 5.0, 2.0, 0.5, key=f"w_{i}")
-                        ls_key = st.selectbox("線種", list(line_style_dict.keys()), key=f"s_{i}")
+                        # キーを一意にするために label を使う
+                        col = c1.color_picker("色", default_cols[i % len(default_cols)], key=f"c_{item['label']}")
+                        lw = c2.number_input("太さ", 1.0, 5.0, 2.0, 0.5, key=f"w_{item['label']}")
+                        ls_key = st.selectbox("線種", list(line_style_dict.keys()), key=f"s_{item['label']}")
                         plot_settings.append({'color': col, 'ls': line_style_dict[ls_key], 'lw': lw})
             else:
                 for i in range(len(plot_data)):
@@ -239,6 +260,7 @@ def main():
             ax.autoscale(enable=True, axis='both', tight=True)
             ylim = ax.get_ylim()
             y_range = ylim[1] - ylim[0]
+            # 余白
             ax.set_ylim(ylim[0] - y_range*0.05, ylim[1] + y_range*0.05)
 
         if legend_loc == 'Outside':
@@ -262,17 +284,20 @@ def main():
         
         gnu_data = create_gnuplot_data(plot_data)
         if gnu_data:
-            c3.download_button("Processed Data (.txt)", gnu_data, "processed_cd_data.txt", "text/plain")
+            c3.download_button("Selected Data (.txt)", gnu_data, "processed_cd_data.txt", "text/plain")
 
         plt.close(fig)
 
     else:
-        st.info("👈 左サイドバーから **[サンプルデータ]** を読み込むか、ファイルをアップロードしてください。")
-        st.markdown("""
-        ### Supported Formats
-        * **CSV / TXT**: 1列目が波長(nm)、2列目がCD値(mdeg)
-        * **J-815 / J-1500**: JASCOのテキスト出力に対応（デフォルトはTab区切り）
-        """)
+        if st.session_state['raw_data_list']:
+            st.warning("⚠️ データは読み込まれていますが、すべて非表示に設定されています。「2. 表示データの選択」を確認してください。")
+        else:
+            st.info("👈 左サイドバーから **[サンプルデータ]** を読み込むか、ファイルをアップロードしてください。")
+            st.markdown("""
+            ### Supported Formats
+            * **CSV / TXT**: 1列目が波長(nm)、2列目がCD値(mdeg)
+            * **JASCO形式**: デフォルトはTab区切り
+            """)
 
 if __name__ == "__main__":
     main()
