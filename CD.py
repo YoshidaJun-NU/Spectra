@@ -6,7 +6,7 @@ import io
 from scipy.signal import savgol_filter
 
 # ---------------------------------------------------------
-# 関数定義: CD用ダミーデータの生成 (キャッシュ有効化)
+# 関数定義: CD用ダミーデータの生成
 # ---------------------------------------------------------
 @st.cache_data
 def generate_cd_dummy_data():
@@ -34,7 +34,7 @@ def generate_cd_dummy_data():
     return data_list
 
 # ---------------------------------------------------------
-# 関数定義: ファイル読み込み (キャッシュ有効化)
+# 関数定義: ファイル読み込み
 # ---------------------------------------------------------
 @st.cache_data
 def load_data(uploaded_files, separator, skip_rows, has_header):
@@ -68,12 +68,14 @@ def load_data(uploaded_files, separator, skip_rows, has_header):
     return data_list
 
 # ---------------------------------------------------------
-# 関数定義: データ処理 (平滑化・オフセット)
+# 関数定義: データ処理 (平滑化・オフセット・単位変換)
 # ---------------------------------------------------------
-def process_data(data_list, smooth_window, use_offset, offset_wl):
+def process_data(data_list, smooth_window, use_offset, offset_wl, 
+                 convert_to_de, conc_dict, path_dict):
     processed = []
     for item in data_list:
-        x, y = item['x'], item['y']
+        x, y = item['x'].copy(), item['y'].copy() # 元データを破壊しないようコピー
+        label = item['label']
         
         # 1. 平滑化 (Savitzky-Golay)
         if smooth_window > 1:
@@ -85,12 +87,26 @@ def process_data(data_list, smooth_window, use_offset, offset_wl):
             except:
                 pass
 
-        # 2. オフセット補正
+        # 2. オフセット補正 (mdegの段階で行うのが一般的だが、変換後でも効果は同じ)
         if use_offset:
             idx = (np.abs(x - offset_wl)).argmin()
             y = y - y[idx]
+            
+        # 3. 単位変換 (Delta Epsilon)
+        if convert_to_de:
+            # 辞書から濃度と光路長を取得 (デフォルト値を安全に設定)
+            c = conc_dict.get(label, 0.0)
+            l = path_dict.get(label, 0.1)
+            
+            # 計算式: Δε = θ / (32980 * C * l)
+            # C: mol/L, l: cm
+            if c > 0 and l > 0:
+                y = y / (32980 * c * l)
+            else:
+                # 濃度入力がない場合は0にしておく（エラー回避）
+                y = np.zeros_like(y)
 
-        processed.append({'label': item['label'], 'x': x, 'y': y})
+        processed.append({'label': label, 'x': x, 'y': y})
     return processed
 
 # ---------------------------------------------------------
@@ -114,7 +130,7 @@ def create_gnuplot_data(data_list):
 # メインアプリ
 # ---------------------------------------------------------
 def main():
-    st.set_page_config(page_title="CD Spectra Plotter Pro", layout="wide", page_icon="🧬")
+    st.set_page_config(page_title="CD Spectra Plotter", layout="wide", page_icon="🧬")
     st.title("🧬 CD Spectra Plotter")
 
     # 全データの格納場所
@@ -133,7 +149,7 @@ def main():
             st.session_state['raw_data_list'] = []
             st.rerun()
 
-        with st.expander("CSV/TXT 読み込み設定", expanded=True):
+        with st.expander("CSV/TXT 読み込み設定", expanded=False):
             separator = st.radio(
                 "区切り文字", 
                 ('tab', 'comma'), 
@@ -148,64 +164,110 @@ def main():
             if uploaded_files:
                 loaded = load_data(uploaded_files, separator, skip_rows, has_header)
                 if loaded:
-                    # 既存リストに追加するか、置換するか。ここでは追記型にします。
-                    # 同じ名前のファイルが来るとややこしいので、一括置換型（上書き）の挙動にします
                     st.session_state['raw_data_list'] = loaded
 
-    # --- Sidebar 2: データ選択 (New!) ---
-    target_data = [] # プロット対象リスト
+    # --- Sidebar 2: データ選択 ---
+    target_data = [] 
     if st.session_state['raw_data_list']:
         st.sidebar.markdown("---")
         st.sidebar.header("2. 表示データの選択")
         
-        # 全ラベルのリストを取得
         all_labels = [d['label'] for d in st.session_state['raw_data_list']]
-        
-        # マルチセレクトで表示するデータを選ぶ
         selected_labels = st.sidebar.multiselect(
-            "プロットする系列を選んでください",
+            "プロットする系列を選択",
             options=all_labels,
-            default=all_labels # デフォルトは全選択
+            default=all_labels
         )
-        
-        # 選択されたラベルに対応するデータだけを抽出
         target_data = [d for d in st.session_state['raw_data_list'] if d['label'] in selected_labels]
 
-    # --- Sidebar 3: データ処理 ---
+    # --- Sidebar 3: 単位変換 (New!) ---
+    # デフォルトの辞書を用意
+    conc_dict = {}
+    path_dict = {}
+    convert_to_de = False
+
+    if target_data:
+        st.sidebar.markdown("---")
+        st.sidebar.header("3. 単位変換 (Δε)")
+        convert_to_de = st.sidebar.checkbox("Convert to Delta Epsilon", help="mdeg を Δε に変換します")
+        
+        if convert_to_de:
+            st.sidebar.info("👇 濃度(M)とセル長(cm)を入力してください")
+            
+            # 編集用のDataFrameを作成
+            # 前回の入力値があれば保持したいが、シンプルにするため再生成
+            # (実用性を高めるなら st.session_state に保存するロジックが必要だが今回は簡易版)
+            table_data = []
+            for d in target_data:
+                table_data.append({
+                    "Label": d['label'],
+                    "Conc (M)": 0.00001,  # デフォルト 10 uM
+                    "Path (cm)": 0.1      # デフォルト 1 mm
+                })
+            
+            df_params = pd.DataFrame(table_data)
+            
+            # データエディタを表示
+            edited_df = st.sidebar.data_editor(
+                df_params, 
+                hide_index=True, 
+                key="editor_params",
+                column_config={
+                    "Conc (M)": st.column_config.NumberColumn(format="%.2e"),
+                    "Path (cm)": st.column_config.NumberColumn(format="%.1f")
+                }
+            )
+            
+            # 辞書に変換
+            for _, row in edited_df.iterrows():
+                conc_dict[row['Label']] = row['Conc (M)']
+                path_dict[row['Label']] = row['Path (cm)']
+
+    # --- Sidebar 4: データ処理 ---
     with st.sidebar:
-        st.header("3. データ処理")
+        st.markdown("---")
+        st.header("4. ノイズ・補正")
         
         smooth_window = st.slider(
             "平滑化 (Window Size)", 
-            min_value=1, max_value=21, value=1, step=2,
-            help="Savitzky-Golayフィルタ。奇数推奨。"
+            min_value=1, max_value=21, value=1, step=2
         )
 
-        use_offset = st.checkbox("ゼロ点補正 (Offset Correction)")
+        use_offset = st.checkbox("ゼロ点補正 (Offset)")
         offset_wl = 350.0
         if use_offset:
             offset_wl = st.number_input("ゼロ点波長 (nm)", value=350.0, step=1.0)
 
-    # 選択されたデータ(target_data)に対して処理を実行
+    # データ処理実行
     if target_data:
-        plot_data = process_data(target_data, smooth_window, use_offset, offset_wl)
+        plot_data = process_data(target_data, smooth_window, use_offset, offset_wl, 
+                                 convert_to_de, conc_dict, path_dict)
     else:
         plot_data = []
 
-    # --- Sidebar 4: グラフ設定 ---
+    # --- Sidebar 5: グラフ設定 ---
     with st.sidebar:
-        st.header("4. グラフスタイル")
+        st.markdown("---")
+        st.header("5. グラフスタイル")
+        
+        # Y軸ラベルのデフォルトを切り替え
+        default_ylabel = "Delta Epsilon (M-1 cm-1)" if convert_to_de else "Ellipticity (mdeg)"
         
         x_label = st.text_input("X軸ラベル", "Wavelength (nm)")
-        y_label = st.text_input("Y軸ラベル", "Ellipticity (mdeg)")
+        y_label = st.text_input("Y軸ラベル", default_ylabel)
         
         with st.expander("軸範囲設定"):
             use_manual_range = st.checkbox("手動設定")
             c1, c2 = st.columns(2)
             x_min = c1.number_input("X Min", value=190.0)
             x_max = c2.number_input("X Max", value=260.0)
-            y_min = c1.number_input("Y Min", value=-50.0)
-            y_max = c2.number_input("Y Max", value=50.0)
+            
+            # Y軸の範囲デフォルトも切り替えると親切
+            def_ymin = -10.0 if convert_to_de else -50.0
+            def_ymax = 10.0 if convert_to_de else 50.0
+            
+            y_min = c1.number_input("Y Min", value=def_ymin)
+            y_max = c2.number_input("Y Max", value=def_ymax)
 
         style_mode = st.selectbox("配色テーマ", ["Auto (Distinct)", "CoolWarm", "Manual"])
         legend_loc = st.radio("凡例位置", ('Best', 'Outside'), horizontal=True)
@@ -214,14 +276,12 @@ def main():
         if plot_data:
             if style_mode == "Manual":
                 st.markdown("##### 個別ライン設定")
-                st.caption("※表示中のデータのみ設定可能です")
                 line_style_dict = {'Solid': '-', 'Dash': '--', 'Dot': ':', 'DashDot': '-.'}
                 default_cols = ['#1f77b4', '#d62728', '#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
                 
                 for i, item in enumerate(plot_data):
                     with st.expander(f"{item['label']}", expanded=False):
                         c1, c2 = st.columns(2)
-                        # キーを一意にするために label を使う
                         col = c1.color_picker("色", default_cols[i % len(default_cols)], key=f"c_{item['label']}")
                         lw = c2.number_input("太さ", 1.0, 5.0, 2.0, 0.5, key=f"w_{item['label']}")
                         ls_key = st.selectbox("線種", list(line_style_dict.keys()), key=f"s_{item['label']}")
@@ -260,7 +320,7 @@ def main():
             ax.autoscale(enable=True, axis='both', tight=True)
             ylim = ax.get_ylim()
             y_range = ylim[1] - ylim[0]
-            # 余白
+            if y_range == 0: y_range = 1.0 # ゼロ割回避
             ax.set_ylim(ylim[0] - y_range*0.05, ylim[1] + y_range*0.05)
 
         if legend_loc == 'Outside':
@@ -284,20 +344,15 @@ def main():
         
         gnu_data = create_gnuplot_data(plot_data)
         if gnu_data:
-            c3.download_button("Selected Data (.txt)", gnu_data, "processed_cd_data.txt", "text/plain")
+            c3.download_button("Processed Data (.txt)", gnu_data, "processed_cd_data.txt", "text/plain")
 
         plt.close(fig)
 
     else:
         if st.session_state['raw_data_list']:
-            st.warning("⚠️ データは読み込まれていますが、すべて非表示に設定されています。「2. 表示データの選択」を確認してください。")
+             st.warning("⚠️ データは読み込まれていますが、すべて非表示に設定されています。")
         else:
             st.info("👈 左サイドバーから **[サンプルデータ]** を読み込むか、ファイルをアップロードしてください。")
-            st.markdown("""
-            ### Supported Formats
-            * **CSV / TXT**: 1列目が波長(nm)、2列目がCD値(mdeg)
-            * **JASCO形式**: デフォルトはTab区切り
-            """)
 
 if __name__ == "__main__":
     main()
