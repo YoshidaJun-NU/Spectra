@@ -6,7 +6,7 @@ import io
 
 # ページ設定
 st.set_page_config(page_title="TG/DTA Pro (Legend Control)", layout="wide")
-st.title("📈 TG/DTA 解析ツール Pro (凡例位置調整版)")
+st.title("📈 TG/DTA 解析")
 
 # --- 関数: 高度なデータ読み込みロジック (Rigaku対応) ---
 def load_data_enhanced(file_obj, col_indices, manual_skip=None):
