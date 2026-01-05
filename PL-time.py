@@ -7,28 +7,39 @@ from scipy.optimize import curve_fit
 # ページ設定
 st.set_page_config(page_title="Multi-Exp Lifetime Fitting", layout="wide")
 
-st.title("📉 Multi-Component Luminescence Lifetime Fitting")
+st.title("📉 Multi-Component Lifetime Fitting")
 st.markdown("発光寿命測定データに対し、複数の指数関数の和でフィッティングを行います。")
 
 # --- サイドバー: データ読み込み ---
 st.sidebar.header("Data Upload")
 uploaded_file = st.sidebar.file_uploader("CSVファイルをアップロード", type=["csv"])
 
-# --- 関数定義: 多成分指数関数モデル ---
+# --- 関数定義: 多成分指数関数モデル (修正版) ---
 def create_multiexp_model(n, b_fixed):
     """
     n成分の指数関数モデルを生成するクロージャ
     I(t) = sum(Ai * exp(-t/tau_i)) + b
-    params: [A1, tau1, A2, tau2, ..., An, taun]
     """
     def model(t, *params):
-        y = np.full_like(t, b_fixed, dtype=np.float64)
+        # エラー回避: Pandas Seriesなどが来ても強制的にNumPy配列にする
+        t_arr = np.array(t)
+        
+        # ベースラインで初期化 (サイズをt_arrに合わせる)
+        y = np.full(t_arr.shape, b_fixed, dtype=np.float64)
+        
         for i in range(n):
             A = params[2*i]
             tau = params[2*i+1]
-            # オーバーフロー対策
-            safe_div = np.divide(-t, tau, out=np.zeros_like(t), where=tau!=0)
-            y += A * np.exp(safe_div)
+            
+            # ゼロ除算回避: tauが極端に小さい場合はその項を0とみなすなど安全策をとる
+            # 通常のカーブフィッティングではboundsを設定するため0にはならないはずだが念のため
+            if abs(tau) < 1e-9:
+                # tau ~ 0 の場合、exp(-t/tau) は一瞬で0になるため寄与なしとする
+                term = np.zeros_like(t_arr)
+            else:
+                term = A * np.exp(-t_arr / tau)
+            
+            y += term
         return y
     return model
 
@@ -39,26 +50,31 @@ if uploaded_file is not None:
         df = pd.read_csv(uploaded_file, skiprows=1, header=None)
         
         if df.shape[1] >= 2:
-            df = df.iloc[:, :2]
+            # 必要な列だけ抽出し、列名を付与
+            df = df.iloc[:, :2].copy()
             df.columns = ['Time', 'Intensity']
+            
+            # 計算用に数値型であることを保証
+            df['Time'] = pd.to_numeric(df['Time'], errors='coerce')
+            df['Intensity'] = pd.to_numeric(df['Intensity'], errors='coerce')
+            df.dropna(inplace=True) # 数値変換できなかった行を削除
         else:
             st.error("データ列が不足しています。")
             st.stop()
 
         # ---------------------------------------------------------
-        # 2. パラメータ設定 (サイドバー & メイン)
+        # 2. パラメータ設定
         # ---------------------------------------------------------
         col_graph, col_ctrl = st.columns([2, 1])
 
         with col_ctrl:
             st.subheader("Fitting Parameters")
 
-            # --- 成分数 n の選択 ---
+            # --- 成分数 n ---
             n_components = st.selectbox(
                 "Number of Components (n)", 
                 options=[1, 2, 3, 4, 5], 
-                index=0,
-                help="I(t) = Σ A_i * exp(-t/τ_i) + b の成分数"
+                index=0
             )
 
             # --- ベースライン (b) ---
@@ -92,10 +108,12 @@ if uploaded_file is not None:
             mask = (df['Time'] >= t_start_fit) & (df['Time'] <= t_end_fit)
             df_fit = df[mask].copy()
 
-            # 初期値 (p0) と境界 (bounds) の作成
-            # 振幅(A)の合計が最大強度付近になるように分割
-            # 寿命(tau)は時間範囲内で対数的に分散させる (多成分解析の安定化のため)
-            
+            # データが空でないかチェック
+            if len(df_fit) == 0:
+                st.warning("選択された範囲にデータがありません。")
+                st.stop()
+
+            # 初期値 (p0) と境界 (bounds)
             y_max_range = df_fit['Intensity'].max() - b_value
             time_span = t_end_fit - t_start_fit
             if time_span <= 0: time_span = 1.0
@@ -105,28 +123,27 @@ if uploaded_file is not None:
             bounds_max = []
 
             for i in range(n_components):
-                # Aの初期値: 均等割り
-                p0.append(y_max_range / n_components) 
+                # 初期値
+                p0.append(y_max_range / n_components) # A
                 
-                # tauの初期値: 成分が増えるごとに短くなるように分散
-                # 例: n=2 -> tau1=span/2, tau2=span/10
                 factor = 2 * (5 ** i) 
                 guess_tau = time_span / factor
-                p0.append(guess_tau)
+                p0.append(guess_tau) # tau
 
-                # 境界設定 (A > 0, tau > 0)
-                bounds_min.extend([0, 0])
+                # 境界 (A >= 0, tau > 1e-9)
+                # tauの下限を0より少し大きくしてゼロ除算を絶対防ぐ
+                bounds_min.extend([0, 1e-6]) 
                 bounds_max.extend([np.inf, np.inf])
 
-            # フィッティング関数生成 (bは固定値としてクロージャに埋め込む)
             fit_func = create_multiexp_model(n_components, b_value)
 
             try:
                 # curve_fit実行
+                # xデータ, yデータともに .values を使って明示的にNumPy配列を渡す
                 popt, pcov = curve_fit(
                     fit_func, 
-                    df_fit['Time'], 
-                    df_fit['Intensity'], 
+                    df_fit['Time'].values, 
+                    df_fit['Intensity'].values, 
                     p0=p0,
                     bounds=(bounds_min, bounds_max),
                     maxfev=10000
@@ -134,20 +151,19 @@ if uploaded_file is not None:
                 
                 # --- 結果表示 ---
                 st.markdown("### Results")
-                
-                # 数式の表示
                 latex_str = r"I(t) = \sum_{i=1}^{" + str(n_components) + r"} A_i e^{-t/\tau_i} + b"
                 st.latex(latex_str)
 
                 # R2乗値
-                residuals = df_fit['Intensity'] - fit_func(df_fit['Time'], *popt)
+                residuals = df_fit['Intensity'].values - fit_func(df_fit['Time'].values, *popt)
                 ss_res = np.sum(residuals**2)
-                ss_tot = np.sum((df_fit['Intensity'] - df_fit['Intensity'].mean())**2)
+                ss_tot = np.sum((df_fit['Intensity'].values - df_fit['Intensity'].mean())**2)
                 r_squared = 1 - (ss_res / ss_tot)
+                
                 st.write(f"**$R^2$**: {r_squared:.5f}")
                 st.write(f"**Fixed $b$**: {b_value:.4e}")
 
-                # パラメータテーブル作成
+                # パラメータテーブル
                 res_data = []
                 for i in range(n_components):
                     A_i = popt[2*i]
@@ -157,10 +173,9 @@ if uploaded_file is not None:
                         "Tau (μs)": f"{tau_i:.4f}",
                         "Amplitude (A)": f"{A_i:.4e}"
                     })
-                
                 st.table(pd.DataFrame(res_data))
 
-                # プロット用データ生成
+                # プロット用データ
                 t_smooth = np.linspace(t_start_fit, t_end_fit, 1000)
                 y_smooth = fit_func(t_smooth, *popt)
 
@@ -197,12 +212,13 @@ if uploaded_file is not None:
                     line=dict(color='red', width=2)
                 ))
                 
-                # 各成分の分解表示 (n > 1の場合のみ)
+                # 各成分の表示
                 if n_components > 1:
                     for i in range(n_components):
                         A_i = popt[2*i]
                         tau_i = popt[2*i+1]
-                        # 各成分単独の曲線 (ベースライン除く)
+                        # ベースラインを含めずに成分のみ描画するか、ベースラインに乗せるか
+                        # ここでは成分の寄与を見るため b_value を足して表示
                         y_comp = A_i * np.exp(-t_smooth / tau_i) + b_value
                         fig.add_trace(go.Scatter(
                             x=t_smooth, y=y_comp,
@@ -219,7 +235,6 @@ if uploaded_file is not None:
                 legend=dict(x=0.65, y=0.95, bgcolor='rgba(255,255,255,0.8)')
             )
             
-            # Log Scale Switch
             is_log = st.checkbox("Log Scale Y-axis", value=False)
             if is_log:
                 fig.update_yaxes(type="log")
