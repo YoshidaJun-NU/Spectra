@@ -3,17 +3,16 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import io
+from scipy.signal import find_peaks
 
 # ---------------------------------------------------------
 # 定数定義
 # ---------------------------------------------------------
-# デフォルトのカラーパレット (Matplotlib tab10 hex codes)
 DEFAULT_COLORS = [
     '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
     '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
 ]
 
-# 線種の表示名とMatplotlib記号の対応
 LINE_STYLES = {
     'Solid (実線)': '-',
     'Dashed (破線)': '--',
@@ -25,13 +24,11 @@ LINE_STYLES = {
 # 関数定義: スタイルの初期化
 # ---------------------------------------------------------
 def init_styles(data_list):
-    """データごとにデフォルトのスタイル情報をsession_stateに保存する"""
     if 'styles' not in st.session_state:
         st.session_state['styles'] = {}
     
     for i, item in enumerate(data_list):
         label = item['label']
-        # まだ設定がない場合のみ初期化
         if label not in st.session_state['styles']:
             default_color = DEFAULT_COLORS[i % len(DEFAULT_COLORS)]
             st.session_state['styles'][label] = {
@@ -44,9 +41,8 @@ def init_styles(data_list):
 # 関数定義: ダミーデータの生成
 # ---------------------------------------------------------
 def generate_dummy_data():
-    """動作確認用に7つのガウス分布データを作成する"""
     data_list = []
-    x = np.linspace(200, 800, 300) # 200nm ~ 800nm
+    x = np.linspace(200, 800, 300) 
     
     for i in range(1, 8):
         center = 300 + (i * 40)
@@ -54,6 +50,8 @@ def generate_dummy_data():
         width = 40
         y = height * np.exp(-((x - center)**2) / (2 * width**2))
         y += np.random.normal(0, 0.002, len(x))
+        # ピーク検出テスト用に小さなピークを追加
+        y += 0.05 * np.exp(-((x - (center - 50))**2) / (2 * 5**2))
         
         df = pd.DataFrame({'Wavelength': x, 'Abs': y})
         data_list.append({
@@ -72,14 +70,12 @@ def load_data(uploaded_files, separator, skip_rows, has_header):
     
     for uploaded_file in uploaded_files:
         try:
-            # --- 1. 文字コードの自動判定 ---
             uploaded_file.seek(0)
             content_bytes = uploaded_file.read()
             uploaded_file.seek(0)
 
             encoding = 'utf-8'
             decoded_text = ""
-            
             try:
                 decoded_text = content_bytes.decode('utf-8')
             except UnicodeDecodeError:
@@ -90,12 +86,10 @@ def load_data(uploaded_files, separator, skip_rows, has_header):
                     encoding = 'latin1'
                     decoded_text = content_bytes.decode('latin1', errors='replace')
 
-            # --- 2. 初期設定 ---
             use_sep = ',' if separator == 'comma' else '\t'
             use_skip = skip_rows
             use_header = 0 if has_header else None
             
-            # --- 3. ファイル構造の解析 (XYDATA検出) ---
             if 'XYDATA' in decoded_text:
                 lines = decoded_text.splitlines()
                 for i, line in enumerate(lines):
@@ -105,7 +99,6 @@ def load_data(uploaded_files, separator, skip_rows, has_header):
                         use_sep = '\t'
                         break
             
-            # --- 4. データの読み込み ---
             df = pd.read_csv(
                 uploaded_file, 
                 sep=use_sep, 
@@ -166,22 +159,18 @@ def main():
     # --- サイドバー：1. データ読み込み設定 ---
     st.sidebar.header("1. データ読み込み設定")
     
-    # 1. ファイルアップロード (spzを追加)
     uploaded_files = st.sidebar.file_uploader(
         "ファイルをアップロード", 
         accept_multiple_files=True, 
         type=['txt', 'csv', 'dat', 'spz']
     )
 
-    # 2. フォーマット指定
     st.sidebar.subheader("フォーマット指定")
     st.sidebar.caption("※ 'XYDATA' を含むファイルは自動認識されます。")
-    
     separator = st.sidebar.radio("区切り文字", ('comma', 'tab'), index=1, format_func=lambda x: "カンマ (CSV)" if x=='comma' else "タブ (TXT/DAT/SPZ)")
-    skip_rows = st.sidebar.number_input("スキップする行数", value=19, min_value=0, help="デフォルトは19行です。自動認識時は無視されます。")
+    skip_rows = st.sidebar.number_input("スキップする行数", value=19, min_value=0, help="デフォルトは19行です。")
     has_header = st.sidebar.checkbox("ヘッダー(列名)がある", value=True)
 
-    # 読み込み処理
     if uploaded_files:
         st.session_state['data_list'] = load_data(uploaded_files, separator, skip_rows, has_header)
         init_styles(st.session_state['data_list'])
@@ -207,17 +196,14 @@ def main():
     # --- サイドバー：3. グラフ設定 ---
     st.sidebar.header("3. グラフ設定")
     
-    # 前処理
     st.sidebar.subheader("前処理")
     do_normalize = st.sidebar.checkbox("正規化 (Min-Max Normalization)")
 
-    # 軸・凡例
     st.sidebar.subheader("軸・凡例")
     x_label = st.sidebar.text_input("X軸ラベル", "Wavelength (nm)")
     y_label = st.sidebar.text_input("Y軸ラベル", "Norm. Abs." if do_normalize else "Abs.") 
     legend_loc = st.sidebar.radio("凡例の位置", ('Outside', 'Inside'))
 
-    # スタイル設定
     st.sidebar.subheader("プロット線スタイル")
     use_custom_style = st.sidebar.checkbox("個別スタイルを適用する", value=False)
     
@@ -236,33 +222,22 @@ def main():
                 
                 with st.sidebar.expander(f"🖊 {label}", expanded=False):
                     c1, c2 = st.columns(2)
-                    st.session_state['styles'][label]['color'] = c1.color_picker(
-                        "色", st.session_state['styles'][label]['color'], key=f"c_{label}"
-                    )
-                    st.session_state['styles'][label]['linewidth'] = c2.number_input(
-                        "太さ", 0.5, 10.0, st.session_state['styles'][label]['linewidth'], step=0.5, key=f"w_{label}"
-                    )
-                    st.session_state['styles'][label]['linestyle'] = st.selectbox(
-                        "線種", list(LINE_STYLES.keys()), 
-                        index=list(LINE_STYLES.keys()).index(st.session_state['styles'][label]['linestyle']),
-                        key=f"s_{label}"
-                    )
+                    st.session_state['styles'][label]['color'] = c1.color_picker("色", st.session_state['styles'][label]['color'], key=f"c_{label}")
+                    st.session_state['styles'][label]['linewidth'] = c2.number_input("太さ", 0.5, 10.0, st.session_state['styles'][label]['linewidth'], step=0.5, key=f"w_{label}")
+                    st.session_state['styles'][label]['linestyle'] = st.selectbox("線種", list(LINE_STYLES.keys()), index=list(LINE_STYLES.keys()).index(st.session_state['styles'][label]['linestyle']), key=f"s_{label}")
 
-    # グリッド設定
     st.sidebar.markdown("---")
     st.sidebar.subheader("グリッド (目盛線) 設定")
     show_grid = st.sidebar.checkbox("グリッド線を表示", value=True)
-    
     grid_params = {'color': '#b0b0b0', 'linewidth': 0.8, 'linestyle': ':'}
     
     if show_grid:
         c1, c2, c3 = st.sidebar.columns([1, 1, 2])
         grid_params['color'] = c1.color_picker("グリッド色", "#b0b0b0")
         grid_params['linewidth'] = c2.number_input("グリッド太さ", 0.1, 5.0, 0.8, 0.1)
-        grid_ls_key = c3.selectbox("グリッド線種", list(LINE_STYLES.keys()), index=3) # デフォルトはDotted
+        grid_ls_key = c3.selectbox("グリッド線種", list(LINE_STYLES.keys()), index=3)
         grid_params['linestyle'] = LINE_STYLES[grid_ls_key]
 
-    # 軸範囲
     st.sidebar.markdown("---")
     st.sidebar.subheader("軸範囲")
     use_manual_range = st.sidebar.checkbox("軸範囲を手動設定")
@@ -275,6 +250,49 @@ def main():
         default_ymax = 1.5 if not do_normalize else 1.1
         y_min = c1.number_input("Y Min", value=default_ymin)
         y_max = c2.number_input("Y Max", value=default_ymax)
+
+    # --- サイドバー：4. 解析 ---
+    st.sidebar.header("4. 解析")
+    
+    # 4-1. 面積計算
+    st.sidebar.markdown("##### 面積(積分)計算")
+    do_calc_area = st.sidebar.checkbox("面積(積分)を計算")
+    calc_start = 0.0
+    calc_end = 0.0
+    
+    if do_calc_area:
+        c1, c2 = st.sidebar.columns(2)
+        calc_start = c1.number_input("開始波長 (nm)", value=300.0)
+        calc_end = c2.number_input("終了波長 (nm)", value=500.0)
+        if calc_start > calc_end:
+            calc_start, calc_end = calc_end, calc_start
+            
+    st.sidebar.markdown("---")
+    
+    # 4-2. ピーク検出 (新規追加)
+    st.sidebar.markdown("##### ピーク検出")
+    do_peak_search = st.sidebar.checkbox("ピーク検出を行う")
+    peak_prominence = 0.01
+    peak_min_height = 0.0
+    peak_distance = 10
+    
+    if do_peak_search:
+        # 感度設定
+        peak_prominence = st.sidebar.number_input(
+            "プロミネンス (感度)", 
+            value=0.01, format="%.4f", step=0.001,
+            help="ピークの突出度。小さいほど小さなピークも検出します。"
+        )
+        peak_min_height = st.sidebar.number_input(
+            "最小高さ", 
+            value=0.0, format="%.2f",
+            help="これより低い値のピークは無視します。"
+        )
+        peak_distance = st.sidebar.number_input(
+            "最小距離 (点数)", 
+            value=10, min_value=1,
+            help="近接するピークを除外するための最小データ点数間隔です。"
+        )
 
     # --- ダミーデータ生成コマンド ---
     st.sidebar.markdown("---")
@@ -290,7 +308,6 @@ def main():
     target_data_list = [d for d in full_data_list if d['label'] in selected_labels]
 
     if target_data_list:
-        # 表示用データの構築
         display_data_list = []
         for item in target_data_list:
             x_vals = item['x']
@@ -316,48 +333,75 @@ def main():
         
         # プロット処理
         num_files = len(display_data_list)
-        colors = []
+        colors_list = []
         
+        # 色決定
         if not use_custom_style:
-            # 一括モード
             if cmap_name == 'Manual':
                 base_colors = ['black', 'red', 'blue', 'green', 'orange', 'purple', 'brown']
-                colors = base_colors * (num_files // len(base_colors) + 1)
+                colors_list = base_colors * (num_files // len(base_colors) + 1)
             else:
                 cmap = plt.get_cmap(cmap_name)
-                colors = [cmap(i) for i in np.linspace(0, 1, num_files)]
-            
-            for i, item in enumerate(display_data_list):
-                ax.plot(item['x'], item['y'], label=item['label'], color=colors[i], linewidth=1.5, alpha=0.8)
-        else:
-            # 個別モード
-            for item in display_data_list:
+                colors_list = [cmap(i) for i in np.linspace(0, 1, num_files)]
+        
+        # ピーク情報の格納用
+        peak_results = []
+
+        for i, item in enumerate(display_data_list):
+            # スタイル決定
+            if not use_custom_style:
+                color = colors_list[i]
+                lw = 1.5
+                ls = '-'
+            else:
                 style = st.session_state['styles'].get(item['label'], {'color':'black', 'linewidth':1.5, 'linestyle':'Solid (実線)'})
-                ls_code = LINE_STYLES.get(style['linestyle'], '-')
-                ax.plot(
-                    item['x'], 
+                color = style['color']
+                lw = style['linewidth']
+                ls = LINE_STYLES.get(style['linestyle'], '-')
+
+            # 線プロット
+            ax.plot(item['x'], item['y'], label=item['label'], color=color, linewidth=lw, linestyle=ls, alpha=0.8)
+            
+            # --- 積分エリアのシェーディング ---
+            if do_calc_area:
+                mask = (item['x'] >= calc_start) & (item['x'] <= calc_end)
+                ax.fill_between(item['x'], item['y'], where=mask, color=color, alpha=0.2)
+
+            # --- ピーク検出とプロット ---
+            if do_peak_search:
+                # scipy.signal.find_peaks を使用
+                peaks, _ = find_peaks(
                     item['y'], 
-                    label=item['label'], 
-                    color=style['color'], 
-                    linewidth=style['linewidth'], 
-                    linestyle=ls_code,
-                    alpha=0.9
+                    height=peak_min_height, 
+                    prominence=peak_prominence,
+                    distance=peak_distance
                 )
+                
+                if len(peaks) > 0:
+                    # ピーク位置をプロット (逆三角形マーカー)
+                    ax.plot(item['x'][peaks], item['y'][peaks], "v", color=color, markersize=8, markeredgecolor='black', alpha=0.9)
+                    
+                    # 結果リストに追加
+                    for p_idx in peaks:
+                        peak_results.append({
+                            'ファイル名': item['label'],
+                            '波長 (nm)': item['x'][p_idx],
+                            '吸光度/強度': item['y'][p_idx]
+                        })
+            # ---------------------------
+
+        # 積分範囲線
+        if do_calc_area:
+            ax.axvline(calc_start, color='gray', linestyle='--', linewidth=1, alpha=0.7)
+            ax.axvline(calc_end, color='gray', linestyle='--', linewidth=1, alpha=0.7)
 
         # 装飾
         ax.set_xlabel(x_label, fontsize=12)
         ax.set_ylabel(y_label, fontsize=12)
         ax.tick_params(direction='out', length=6, width=1)
         
-        # --- グリッド設定の適用 ---
         if show_grid:
-            ax.grid(
-                True, 
-                color=grid_params['color'], 
-                linewidth=grid_params['linewidth'], 
-                linestyle=grid_params['linestyle'], 
-                alpha=0.5
-            )
+            ax.grid(True, color=grid_params['color'], linewidth=grid_params['linewidth'], linestyle=grid_params['linestyle'], alpha=0.5)
         else:
             ax.grid(False)
 
@@ -371,6 +415,48 @@ def main():
             ax.legend(loc='best')
 
         st.pyplot(fig)
+
+        # --- 解析結果表示エリア ---
+        
+        # 1. 面積計算結果
+        if do_calc_area:
+            st.markdown("---")
+            st.subheader("📊 面積計算結果")
+            st.caption(f"波長範囲: {calc_start} nm 〜 {calc_end} nm (台形積分)")
+            
+            area_results = []
+            for item in display_data_list:
+                mask = (item['x'] >= calc_start) & (item['x'] <= calc_end)
+                x_sub = item['x'][mask]
+                y_sub = item['y'][mask]
+                
+                if len(x_sub) > 1:
+                    sort_idx = np.argsort(x_sub)
+                    if hasattr(np, 'trapezoid'):
+                         area = np.trapezoid(y_sub[sort_idx], x_sub[sort_idx])
+                    else:
+                         area = np.trapz(y_sub[sort_idx], x_sub[sort_idx])
+                    area_results.append({'ファイル名': item['label'], '面積': area})
+                else:
+                    area_results.append({'ファイル名': item['label'], '面積': 0.0})
+            
+            if area_results:
+                st.dataframe(pd.DataFrame(area_results), use_container_width=True)
+
+        # 2. ピーク検出結果 (新規追加)
+        if do_peak_search:
+            st.markdown("---")
+            st.subheader("🏔 ピーク検出結果")
+            if peak_results:
+                df_peaks = pd.DataFrame(peak_results)
+                # 見やすいようにソート
+                df_peaks = df_peaks.sort_values(['ファイル名', '波長 (nm)'])
+                st.dataframe(
+                    df_peaks.style.format({'波長 (nm)': '{:.2f}', '吸光度/強度': '{:.4f}'}), 
+                    use_container_width=True
+                )
+            else:
+                st.info("条件に一致するピークは見つかりませんでした。感度(プロミネンス)や最小高さを調整してください。")
 
         # --- ダウンロード ---
         st.markdown("---")
