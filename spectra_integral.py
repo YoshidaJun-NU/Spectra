@@ -257,7 +257,7 @@ def main():
         y_min = c1.number_input("Y Min", value=default_ymin)
         y_max = c2.number_input("Y Max", value=default_ymax)
 
-    # --- サイドバー：4. 解析 (新規追加) ---
+    # --- サイドバー：4. 解析 ---
     st.sidebar.header("4. 解析")
     do_calc_area = st.sidebar.checkbox("面積(積分)を計算", help="指定した波長範囲の曲線下の面積を計算します（台形積分）。")
     calc_start = 0.0
@@ -379,7 +379,7 @@ def main():
 
         st.pyplot(fig)
 
-        # --- 面積計算結果の表示 ---
+        # --- 面積計算結果の表示 (修正版) ---
         if do_calc_area:
             st.markdown("---")
             st.subheader("📊 面積計算結果")
@@ -394,10 +394,15 @@ def main():
                 
                 # データが存在する場合のみ積分
                 if len(x_sub) > 1:
-                    # xが降順(大きい方から小さい方)の場合、積分値が負になるため絶対値をとるか並べ替える
-                    # ここではソートしてから積分する
                     sort_idx = np.argsort(x_sub)
-                    area = np.trapz(y_sub[sort_idx], x_sub[sort_idx])
+                    
+                    # --- NumPy 2.0対応の変更箇所 ---
+                    if hasattr(np, 'trapezoid'):
+                         area = np.trapezoid(y_sub[sort_idx], x_sub[sort_idx])
+                    else:
+                         area = np.trapz(y_sub[sort_idx], x_sub[sort_idx])
+                    # ----------------------------
+
                     area_results.append({'ファイル名': item['label'], '面積': area})
                 else:
                     area_results.append({'ファイル名': item['label'], '面積': 0.0})
