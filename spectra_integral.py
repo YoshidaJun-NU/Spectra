@@ -305,7 +305,7 @@ def main():
                 'y': y_vals
             })
 
-        st.subheader(f"Spectra Viewer (Integ. ver) ({len(display_data_list)} samples)")
+        st.subheader(f"plotting ({len(display_data_list)} samples)")
         
         fig, ax = plt.subplots(figsize=(10, 6))
         
