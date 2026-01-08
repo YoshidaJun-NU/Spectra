@@ -78,7 +78,7 @@ if target_file:
         # --- スタイル設定（追加項目） ---
         st.sidebar.markdown("---")
         st.sidebar.subheader("3. 表示スタイル")
-        tick_dir = st.sidebar.radio("目盛の向き", ["in (内向き)", "out (外向き)"], index=0, horizontal=True).split()[0]
+        tick_dir = st.sidebar.radio("目盛の向き", ["in (内向き)", "out (外向き)"], index=1, horizontal=True).split()[0]
         line_width = st.sidebar.slider("線の太さ", 0.5, 5.0, 1.5, 0.5)
         font_size = st.sidebar.slider("文字の大きさ", 8, 24, 12, 1)
         
