@@ -47,7 +47,7 @@ def load_data_robust(file_path_or_buffer, sep, header, encoding):
 # アプリ設定
 # ---------------------------------------------------------
 st.set_page_config(page_title="DSC Style Plotter", layout="wide")
-st.title("Scientific Graph Plotter (DSC)")
+st.title("DSC Graph Plotter")
 
 # ---------------------------------------------------------
 # サイドバー：1. データ読み込み設定
@@ -145,7 +145,7 @@ if target_file:
         # グラフ描画（中央8割）
         # ---------------------------------------------------------
         with graph_container:
-            st.subheader("プレビュー")
+            #st.subheader("プレビュー")
             spacer_l, main_col, spacer_r = st.columns([0.1, 0.8, 0.1])
             
             with main_col:
