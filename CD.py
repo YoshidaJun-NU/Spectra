@@ -29,7 +29,7 @@ def load_data(uploaded_files, separator, skip_rows, has_header):
     for uploaded_file in uploaded_files:
         try:
             uploaded_file.seek(0)
-            sep_char = '\t' if separator == 'tab' else ','
+            sep_char = '\t' if separator == 'タブ (tab)' else ','
             df = pd.read_csv(uploaded_file, sep=sep_char, skiprows=skip_rows, header=0 if has_header else None)
             df = df.apply(pd.to_numeric, errors='coerce').dropna()
             if df.shape[1] >= 2:
@@ -57,80 +57,89 @@ def apply_processing(data_list, smooth, use_offset, offset_wl, convert_to_de, pa
 # 2. メインアプリ
 # ---------------------------------------------------------
 def main():
-    st.set_page_config(page_title="Advanced CD Plotter", layout="wide")
-    st.title("🧬 Professional CD Spectra Plotter")
+    st.set_page_config(page_title="高度なCDプロッター", layout="wide")
+    st.title("🧬 CDスペクトル描画ツール")
 
     if 'raw_data' not in st.session_state: st.session_state['raw_data'] = []
 
-    # --- サイドバー 1: データ管理 ---
+    # --- サイドバー 1: データ管理 (最上部にアップロードを配置) ---
     with st.sidebar:
-        st.header("1. Data Management")
-        c1, c2 = st.columns(2)
-        if c1.button("Sample Data"): st.session_state['raw_data'] = generate_cd_dummy_data()
-        if c2.button("Clear"): st.session_state['raw_data'] = []; st.rerun()
+        st.header("1. データ管理")
         
-        files = st.file_uploader("Upload CSV/TXT", accept_multiple_files=True)
+        # アップロード機能を最上部へ
+        files = st.file_uploader("CSV/TXTファイルをアップロード", accept_multiple_files=True)
         if files:
-            with st.expander("Import Settings"):
-                sep = st.radio("Separator", ("tab", "comma"))
-                skip = st.number_input("Skip Rows", 0, 100, 19)
-                head = st.checkbox("Header exists", True)
-            st.session_state['raw_data'] = load_data(files, sep, skip, head)
+            with st.expander("インポート設定"):
+                sep = st.radio("区切り文字", ("タブ (tab)", "カンマ (comma)"))
+                skip = st.number_input("読み飛ばす行数 (Skip Rows)", 0, 100, 19)
+                head = st.checkbox("ヘッダーあり", True)
+            if st.button("ファイルを読み込む"):
+                st.session_state['raw_data'] = load_data(files, sep, skip, head)
+
+        st.markdown("---")
+        c1, c2 = st.columns(2)
+        if c1.button("サンプル読み込み"): 
+            st.session_state['raw_data'] = generate_cd_dummy_data()
+        if c2.button("データをクリア"): 
+            st.session_state['raw_data'] = []
+            st.rerun()
 
     if not st.session_state['raw_data']:
-        st.info("👈 Please load data to start.")
+        st.info("👈 データをロードしてください。")
         return
 
     # --- サイドバー 2: 選択と単位変換 ---
     all_labels = [d['label'] for d in st.session_state['raw_data']]
-    selected = st.sidebar.multiselect("Select Series", all_labels, default=all_labels)
+    selected = st.sidebar.multiselect("表示する系列を選択", all_labels, default=all_labels)
     target_data = [d for d in st.session_state['raw_data'] if d['label'] in selected]
 
-    convert_de = st.sidebar.checkbox("Convert to Δε (M⁻¹cm⁻¹)")
+    convert_de = st.sidebar.checkbox("Δε (M⁻¹cm⁻¹) に変換")
     unit_params = {}
     if convert_de:
-        st.sidebar.caption("Define Conc(M) and Path(cm):")
+        st.sidebar.caption("濃度(M)と光路長(cm)を指定:")
         for d in target_data:
-            with st.sidebar.expander(f"Params: {d['label']}"):
-                c = st.number_input("Conc (M)", value=1.0e-5, format="%.2e", key=f"c_{d['label']}")
-                l = st.number_input("Path (cm)", value=0.1, key=f"l_{d['label']}")
+            with st.sidebar.expander(f"パラメータ: {d['label']}"):
+                c = st.number_input("濃度 (M)", value=1.0e-5, format="%.2e", key=f"c_{d['label']}")
+                l = st.number_input("光路長 (cm)", value=0.1, key=f"l_{d['label']}")
                 unit_params[d['label']] = {'c': c, 'l': l}
 
     # --- サイドバー 3: プロット設定 ---
     st.sidebar.markdown("---")
-    st.sidebar.header("3. Plot Customization")
+    st.sidebar.header("2. グラフのカスタマイズ")
     
-    with st.sidebar.expander("Global Axis Style", expanded=True):
-        tick_dir = st.radio("Tick Direction", ["in", "out", "inout"], index=0, horizontal=True)
-        show_top_right = st.checkbox("Show Top/Right Spines (Box)", value=True)
-        show_legend = st.checkbox("Show Legend (凡例を表示)", value=True) # <-- 追加
-        grid_on = st.checkbox("Show Grid", value=False)
-        x_lab = st.text_input("X Label", "Wavelength (nm)")
-        # rを追加してSyntaxWarningを修正
-        y_lab = st.text_input("Y Label", r"$\Delta\epsilon$" if convert_de else "Ellipticity (mdeg)")
+    with st.sidebar.expander("軸・共通スタイルの設定", expanded=True):
+        tick_dir = st.radio("目盛りの向き", ["in (内向き)", "out (外向き)", "inout (両側)"], index=0, horizontal=True)
+        # Matplotlib用に抽出
+        t_dir = tick_dir.split()[0]
+        
+        show_top_right = st.checkbox("枠囲みを表示 (上・右側)", value=True)
+        show_legend = st.checkbox("凡例を表示", value=True)
+        grid_on = st.checkbox("グリッド線を表示", value=False)
+        x_lab = st.text_input("X軸ラベル", "Wavelength (nm)")
+        y_lab = st.text_input("Y軸ラベル", r"$\Delta\epsilon$ (M$^{-1}$cm$^{-1}$)" if convert_de else "Ellipticity (mdeg)")
 
     # 系列ごとの詳細設定
     line_configs = {}
-    st.sidebar.subheader("Series Style")
+    st.sidebar.subheader("系列別スタイル")
     for i, d in enumerate(target_data):
-        with st.sidebar.expander(f"Style: {d['label']}"):
-            # hex変換を適用してエラーを回避
+        with st.sidebar.expander(f"スタイル: {d['label']}"):
             default_hex = mcolors.to_hex(plt.cm.tab10(i % 10))
-            col = st.color_picker("Color", default_hex, key=f"col_{d['label']}")
-            
-            width = st.slider("Line Width", 0.5, 5.0, 2.0, 0.5, key=f"width_{d['label']}")
-            style = st.selectbox("Line Style", ["-", "--", ":", "-."], key=f"style_{d['label']}")
-            line_configs[d['label']] = {'color': col, 'lw': width, 'ls': style}
+            col = st.color_picker("線の色", default_hex, key=f"col_{d['label']}")
+            width = st.slider("線の太さ", 0.5, 5.0, 2.0, 0.5, key=f"width_{d['label']}")
+            style = st.selectbox("線種", ["- (実線)", "-- (破線)", ": (点線)", "-. (一点鎖線)"], key=f"style_{d['label']}")
+            # 線種の記号のみ抽出
+            l_style = style.split()[0]
+            line_configs[d['label']] = {'color': col, 'lw': width, 'ls': l_style}
 
     # --- 描画実行 ---
-    smooth = st.sidebar.slider("Smoothing", 1, 31, 1, 2)
+    smooth = st.sidebar.slider("平滑化 (Smoothing)", 1, 31, 1, 2)
     processed_data = apply_processing(target_data, smooth, False, 350, convert_de, unit_params)
 
     # Matplotlib 描画
     fig, ax = plt.subplots(figsize=(8, 5.5))
     
-    # 基本設定の適用
-    ax.tick_params(direction=tick_dir, top=show_top_right, right=show_top_right, labelsize=11)
+    # 基本設定
+    ax.tick_params(direction=t_dir, top=show_top_right, right=show_top_right, labelsize=11)
     if not show_top_right:
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
@@ -148,26 +157,25 @@ def main():
     ax.set_xlabel(x_lab, fontsize=13)
     ax.set_ylabel(y_lab, fontsize=13)
     
-    # 凡例の表示・非表示を切り替え
     if show_legend:
         ax.legend(frameon=False)
     
     st.pyplot(fig)
 
     # --- エクスポート ---
-    st.markdown("### 📥 Export")
+    st.markdown("### 📥 エクスポート")
     c1, c2, c3 = st.columns(3)
     
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
-    c1.download_button("Download PNG (300dpi)", buf.getvalue(), "plot.png", "image/png")
+    c1.download_button("PNG画像 (300dpi) を保存", buf.getvalue(), "plot.png", "image/png")
     
     tif_buf = io.BytesIO()
     fig.savefig(tif_buf, format="tiff", dpi=300, bbox_inches='tight')
-    c2.download_button("Download TIFF", tif_buf.getvalue(), "plot.tiff", "image/tiff")
+    c2.download_button("TIFF画像を保存", tif_buf.getvalue(), "plot.tiff", "image/tiff")
     
     csv_data = pd.DataFrame({d['label']: pd.Series(d['y'], index=d['x']) for d in processed_data})
-    c3.download_button("Download CSV", csv_data.to_csv(), "processed_data.csv", "text/csv")
+    c3.download_button("処理済みデータをCSVで保存", csv_data.to_csv(), "processed_data.csv", "text/csv")
 
     plt.close(fig)
 
