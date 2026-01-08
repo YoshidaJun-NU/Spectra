@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib
+import matplotlib.colors as mcolors  # これを追加
 import numpy as np
 import io
 from scipy.signal import savgol_filter
@@ -104,14 +105,16 @@ def main():
         show_top_right = st.checkbox("Show Top/Right Spines (Box)", value=True)
         grid_on = st.checkbox("Show Grid", value=False)
         x_lab = st.text_input("X Label", "Wavelength (nm)")
-        y_lab = st.text_input("Y Label", "$\Delta\epsilon$" if convert_de else "Ellipticity (mdeg)")
+        y_lab = st.text_input("Y Label", r"$\Delta\epsilon$" if convert_de else "Ellipticity (mdeg)")
 
     # 系列ごとの詳細設定
     line_configs = {}
     st.sidebar.subheader("Series Style")
     for i, d in enumerate(target_data):
         with st.sidebar.expander(f"Style: {d['label']}"):
-            col = st.color_picker("Color", plt.cm.tab10(i%10), key=f"col_{d['label']}")
+            # mcolors.to_hex() でヘックス形式に変換する
+            default_color = mcolors.to_hex(plt.cm.tab10(i % 10))
+            col = st.color_picker("Color", default_color, key=f"col_{d['label']}")
             width = st.slider("Line Width", 0.5, 5.0, 2.0, 0.5, key=f"width_{d['label']}")
             style = st.selectbox("Line Style", ["-", "--", ":", "-."], key=f"style_{d['label']}")
             line_configs[d['label']] = {'color': col, 'lw': width, 'ls': style}
