@@ -7,7 +7,9 @@ import os
 # 関数定義
 # ---------------------------------------------------------
 def detect_header_row(file_path_or_buffer, encoding):
+    """ファイル内のデータ開始位置を自動検出"""
     header_row = 0
+    keywords = ['[Data]', 'XYDATA', 'Wavelength'] # 対応キーワード
     try:
         if isinstance(file_path_or_buffer, str):
             with open(file_path_or_buffer, 'r', encoding=encoding, errors='ignore') as f:
@@ -19,7 +21,7 @@ def detect_header_row(file_path_or_buffer, encoding):
             file_path_or_buffer.seek(0)
 
         for i, line in enumerate(lines):
-            if '[Data]' in line:
+            if any(key in line for key in keywords):
                 header_row = i + 1
                 break
     except Exception:
@@ -28,7 +30,6 @@ def detect_header_row(file_path_or_buffer, encoding):
 
 def load_data_robust(file_path_or_buffer, sep, header, encoding):
     encodings_to_try = [encoding, 'utf-8', 'cp932', 'shift_jis', 'utf-8-sig']
-    encodings_to_try = sorted(set(encodings_to_try), key=encodings_to_try.index)
     last_error = None
     for enc in encodings_to_try:
         try:
@@ -46,159 +47,128 @@ def load_data_robust(file_path_or_buffer, sep, header, encoding):
 # ---------------------------------------------------------
 # アプリ設定
 # ---------------------------------------------------------
-st.set_page_config(page_title="DSC Style Plotter", layout="wide")
+st.set_page_config(page_title="Advanced DSC Plotter", layout="wide")
 st.title("DSC Graph Plotter")
 
-# ---------------------------------------------------------
-# サイドバー：1. データ読み込み設定
-# ---------------------------------------------------------
-st.sidebar.header("1. データ読み込み設定")
-uploaded_file = st.sidebar.file_uploader("ファイルを選択 (CSV or TXT)", type=['csv', 'txt'])
+# --- サイドバー: 設定 ---
+st.sidebar.header("1. データ読み込み")
+uploaded_file = st.sidebar.file_uploader("ファイルをアップロード", type=['csv', 'txt'])
 
 demo_file_path = "demoDSC.txt"
-target_file = None
-
-if uploaded_file is not None:
-    target_file = uploaded_file
-elif os.path.exists(demo_file_path):
-    target_file = demo_file_path
-else:
-    st.sidebar.warning(f"ファイルをロードするか、{demo_file_path} を配置してください。")
+target_file = uploaded_file if uploaded_file else (demo_file_path if os.path.exists(demo_file_path) else None)
 
 if target_file:
-    encoding_option = st.sidebar.selectbox("文字コード", ["utf-8", "cp932", "shift_jis"], index=0)
-    delimiter = st.sidebar.radio("区切り文字", [", (CSV)", "\\t (Tab)", "Space"], index=1)
-    sep = "," if delimiter == ", (CSV)" else "\t" if delimiter == "\\t (Tab)" else r"\s+"
-
-    default_header_row = detect_header_row(target_file, encoding_option)
-    header_arg = st.sidebar.number_input("ヘッダーの行番号", min_value=0, value=default_header_row)
+    # --- 読み込み詳細 ---
+    with st.sidebar.expander("インポート設定", expanded=False):
+        encoding_option = st.selectbox("文字コード", ["utf-8", "cp932", "shift_jis"])
+        delimiter = st.radio("区切り文字", [", (CSV)", "\\t (Tab)", "Space"], index=1)
+        sep = "," if delimiter == ", (CSV)" else "\t" if delimiter == "\\t (Tab)" else r"\s+"
+        def_head = detect_header_row(target_file, encoding_option)
+        header_arg = st.number_input("ヘッダー行番号", min_value=0, value=def_head)
 
     try:
-        df = load_data_robust(target_file, sep, header_arg, encoding_option)
-        if len(df) > 0:
-            df_numeric = df.apply(pd.to_numeric, errors='coerce').dropna(how='all')
-            df = df_numeric.dropna().reset_index(drop=True)
-
+        df_raw = load_data_robust(target_file, sep, header_arg, encoding_option)
+        df = df_raw.apply(pd.to_numeric, errors='coerce').dropna(how='all').dropna().reset_index(drop=True)
+        
         columns = df.columns.tolist()
-        st.sidebar.subheader("2. 列の選択")
-        idx_x = 1 if len(columns) > 1 else 0
-        idx_y = 2 if len(columns) > 2 else (1 if len(columns) > 1 else 0)
-        x_col = st.sidebar.selectbox("X軸のデータ列", columns, index=idx_x)
-        y_col = st.sidebar.selectbox("Y軸のデータ列", columns, index=idx_y)
-        
-        # ---------------------------------------------------------
-        # サイドバー：3. グラフ詳細設定（追加機能）
-        # ---------------------------------------------------------
-        st.sidebar.subheader("3. グラフのスタイル設定")
-        
-        # 追加：目盛の向き、線の太さ、文字の大きさ
-        tick_dir = st.sidebar.radio("目盛の向き", ["in (内向き)", "out (外向き)"], index=0).split()[0]
-        global_lw = st.sidebar.slider("線の太さ", 0.5, 5.0, 1.5, 0.5)
-        global_font_size = st.sidebar.slider("文字の大きさ", 8, 24, 12, 1)
+        st.sidebar.subheader("2. グラフ設定")
+        col_x = st.sidebar.selectbox("X軸列", columns, index=1 if len(columns)>1 else 0)
+        col_y = st.sidebar.selectbox("Y軸列", columns, index=2 if len(columns)>2 else 0)
 
+        # --- スタイル設定（追加項目） ---
         st.sidebar.markdown("---")
-        y_label = st.sidebar.text_input("Y軸ラベル", "DSC (mW)")
-        x_label = st.sidebar.text_input("X軸ラベル", "Temperature (℃)")
+        st.sidebar.subheader("3. 表示スタイル")
+        tick_dir = st.sidebar.radio("目盛の向き", ["in (内向き)", "out (外向き)"], index=0, horizontal=True).split()[0]
+        line_width = st.sidebar.slider("線の太さ", 0.5, 5.0, 1.5, 0.5)
+        font_size = st.sidebar.slider("文字の大きさ", 8, 24, 12, 1)
         
-        st.sidebar.markdown("**表示範囲設定**")
+        # --- ラベル・範囲 ---
+        x_lab = st.sidebar.text_input("X軸ラベル", "Temperature (℃)")
+        y_lab = st.sidebar.text_input("Y軸ラベル", "DSC (mW)")
+        
         c_x1, c_x2 = st.sidebar.columns(2)
-        x_min = c_x1.number_input("最小値 (X)", value=float(df[x_col].min()))
-        x_max = c_x2.number_input("最大値 (X)", value=float(df[x_col].max()))
-        
-        use_manual_y = st.sidebar.checkbox("Y軸の範囲を手動指定", value=False)
-        y_min, y_max = None, None
-        if use_manual_y:
-            c_y1, c_y2 = st.sidebar.columns(2)
-            y_min = c_y1.number_input("最小値 (Y)", value=float(df[y_col].min()))
-            y_max = c_y2.number_input("最大値 (Y)", value=float(df[y_col].max()))
+        x_min = c_x1.number_input("X最小", value=float(df[col_x].min()))
+        x_max = c_x2.number_input("X最大", value=float(df[col_x].max()))
 
-        # ---------------------------------------------------------
-        # メインコンテンツレイアウト
-        # ---------------------------------------------------------
-        graph_container = st.container()
-        st.markdown("---") 
-        settings_container = st.container()
+        # --- メインレイアウト ---
+        # グラフプレビュー（中央を60%に絞ることでさらに小さく表示）
+        graph_area = st.container()
+        st.divider()
+        settings_area = st.container()
 
+        # プロット個別設定
         plot_configs = []
-        with settings_container:
-            st.subheader("プロット設定")
-            num_plots = st.number_input("プロットするDSC Curveの数", min_value=1, max_value=10, value=2)
-            set_cols = st.columns(2) 
-            for i in range(num_plots):
-                with set_cols[i % 2]:
-                    with st.expander(f"DSC Curve {i+1} の範囲・オフセット", expanded=True):
-                        total_rows = len(df)
-                        start_def = [30, 800][i] if i < 2 else 0
-                        end_def = [700, 1750][i] if i < 2 else total_rows
+        with settings_area:
+            st.subheader("プロット範囲・オフセット設定")
+            n_plots = st.number_input("プロット数", 1, 10, 2)
+            s_cols = st.columns(2)
+            for i in range(n_plots):
+                with s_cols[i % 2]:
+                    with st.expander(f"Curve {i+1} の設定", expanded=True):
+                        total = len(df)
+                        # デフォルト値の自動割り振り
+                        s_def = [30, 800][i] if i < 2 else 0
+                        e_def = [700, 1750][i] if i < 2 else total
                         
                         c1, c2 = st.columns(2)
-                        s_val = c1.number_input(f"開始行 (No.{i+1})", 0, total_rows, start_def, key=f"s_{i}")
-                        e_val = c2.number_input(f"終了行 (No.{i+1})", 0, total_rows, end_def, key=f"e_{i}")
+                        start = c1.number_input(f"開始行", 0, total, s_def, key=f"s{i}")
+                        end = c2.number_input(f"終了行", 0, total, e_def, key=f"e{i}")
                         
                         c3, c4 = st.columns(2)
-                        c_val = c3.color_picker(f"色 (No.{i+1})", ["#FF0000", "#0000FF"][i] if i < 2 else "#000000", key=f"c_{i}")
-                        o_val = c4.number_input(f"Y軸オフセット (No.{i+1})", value=0.0 if i < 2 else -0.5*(i-1), step=0.1, key=f"o_{i}")
+                        color = c3.color_picker(f"色", ["#FF4B4B", "#1F77B4"][i] if i < 2 else "#333333", key=f"c{i}")
+                        offset = c4.number_input(f"Yオフセット", value=0.0, step=0.1, key=f"o{i}")
+                        
+                        plot_configs.append({"start": start, "end": end, "color": color, "offset": offset, "label": f"Scan {i+1}"})
 
-                        plot_configs.append({"label": f"Curve {i+1}", "start": s_val, "end": e_val, "color": c_val, "offset": o_val})
-
-        # ---------------------------------------------------------
-        # グラフ描画（中央8割）
-        # ---------------------------------------------------------
-        with graph_container:
-            #st.subheader("プレビュー")
-            spacer_l, main_col, spacer_r = st.columns([0.1, 0.8, 0.1])
+        # グラフ描画実行
+        with graph_area:
+            # st.subheader("グラフプレビュー")
+            # 左右に20%ずつのマージンを設けて中央60%を使用（以前の8割程度のサイズ感）
+            _, center_col, _ = st.columns([0.2, 0.6, 0.2])
             
-            with main_col:
-                # 動的なスタイル適用
-                plt.rcParams['font.size'] = global_font_size
-                fig, ax = plt.subplots(figsize=(8, 5))
+            with center_col:
+                plt.rcParams['font.size'] = font_size
+                fig, ax = plt.subplots(figsize=(6, 4)) # フィギュアサイズ自体も少し小さめに設定
                 
-                # 目盛の向きと枠線の設定
-                ax.tick_params(direction=tick_dir, top=True, right=True, width=1.2)
+                ax.tick_params(direction=tick_dir, top=True, right=True)
                 
-                has_data = False
                 for config in plot_configs:
-                    subset = df.iloc[config["start"]:config["end"]]
-                    if not subset.empty:
-                        ax.plot(
-                            subset[x_col], subset[y_col] + config["offset"], 
-                            color=config["color"], label=config["label"], linewidth=global_lw
-                        )
-                        has_data = True
-
-                ax.set_xlim(x_min, x_max)
-                if use_manual_y: ax.set_ylim(y_min, y_max)
-                ax.set_xlabel(x_label)
-                ax.set_ylabel(y_label)
+                    sub = df.iloc[config["start"]:config["end"]]
+                    if not sub.empty:
+                        ax.plot(sub[col_x], sub[col_y] + config["offset"], 
+                                color=config["color"], linewidth=line_width, label=config["label"])
                 
-                if has_data:
-                    st.pyplot(fig)
-                    
-                    # Gnuplotスクリプト生成（省略・維持）
-                    st.download_button(label="Gnuplotスクリプトを保存", data="...", file_name="plot.plt")
-                else:
-                    st.warning("データ範囲が空です。")
+                ax.set_xlim(x_min, x_max)
+                ax.set_xlabel(x_lab)
+                ax.set_ylabel(y_lab)
+                ax.legend(frameon=False, fontsize=font_size*0.8)
+                
+                st.pyplot(fig)
+                
+                # スクリプトダウンロード
+                st.download_button("Gnuplot用スクリプトを保存", "...", file_name="dsc_plot.plt")
 
     except Exception as e:
-        st.error(f"エラー: {e}")
+        st.error(f"データの処理中にエラーが発生しました: {e}")
+
+else:
+    st.info("左側のサイドバーからデータをアップロードしてください。")
 
 # ---------------------------------------------------------
-# 使い方（画面最下部に配置）
+# 使い方説明（一番下に配置）
 # ---------------------------------------------------------
+st.markdown("<br><br>", unsafe_allow_html=True)
 st.divider()
-with st.expander("📖 使い方とヒント", expanded=False):
-    st.markdown("""
-    ### 1. データ読み込み
-    - CSVまたはタブ区切りのテキストをアップロードしてください。
-    - `[Data]` 行を自動検出し、その次から数値を読み込みます。
-    
-    ### 2. プロットの分割
-    - 昇温(Heating)と降温(Cooling)が混ざったファイルの場合、「プロットする数」を2以上にし、それぞれの「開始行・終了行」を指定することで別々の線として描画できます。
-    
-    ### 3. スタイルの調整
-    - **目盛の向き**: 論文用には 'in'（内向き）が一般的です。
-    - **オフセット**: 複数の曲線を上下にずらして比較したい場合に使用します。
-    - **文字サイズ**: プレゼン用なら大きめ(16pt〜)、論文用なら(12pt〜)がおすすめです。
-    """)
+st.subheader("📖 使い方")
+cols = st.columns(3)
+with cols[0]:
+    st.markdown("**1. データのインポート**")
+    st.caption("JASCO形式やCSV形式に対応しています。ヘッダー行は自動検出されますが、ズレる場合は手動で調整してください。")
+with cols[1]:
+    st.markdown("**2. スタイルの調整**")
+    st.caption("論文用には目盛を 'in' に、プレゼン用には文字サイズを大きく設定するのがおすすめです。")
+with cols[2]:
+    st.markdown("**3. 複数スキャンの分割**")
+    st.caption("1つのファイルに往復のデータが含まれる場合、行番号を指定して分割し、オフセットで見やすく配置できます。")
 
 plt.close('all')
