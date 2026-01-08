@@ -7,11 +7,11 @@ import numpy as np
 import io
 from scipy.signal import savgol_filter
 
-# GUIなし環境（Ubuntuサーバー等）での動作を安定させる
+# GUIなし環境での動作安定化
 matplotlib.use('Agg')
 
 # ---------------------------------------------------------
-# 1. 関数定義: データ処理・生成
+# 1. 関数定義: データ処理
 # ---------------------------------------------------------
 @st.cache_data
 def generate_cd_dummy_data():
@@ -19,24 +19,32 @@ def generate_cd_dummy_data():
     y1 = 30 * np.exp(-((x - 192)**2) / 50) - 15 * np.exp(-((x - 222)**2) / 100) - 10 * np.exp(-((x - 208)**2) / 100)
     y2 = 10 * np.exp(-((x - 195)**2) / 80) - 12 * np.exp(-((x - 218)**2) / 200)
     return [
-        {'label': 'Protein_A', 'x': x, 'y': y1 + np.random.normal(0, 0.2, len(x))},
-        {'label': 'Protein_B', 'x': x, 'y': y2 + np.random.normal(0, 0.2, len(x))}
+        {'label': 'Sample_A', 'x': x, 'y': y1 + np.random.normal(0, 0.2, len(x))},
+        {'label': 'Sample_B', 'x': x, 'y': y2 + np.random.normal(0, 0.2, len(x))}
     ]
 
 @st.cache_data
-def load_data(uploaded_files, separator, skip_rows, has_header):
+def load_data(uploaded_files, separator, skip_rows, has_header, col_x, col_y):
     data_list = []
     for uploaded_file in uploaded_files:
         try:
             uploaded_file.seek(0)
             sep_char = '\t' if separator == 'タブ (tab)' else ','
+            # 指定された行をスキップして読み込み
             df = pd.read_csv(uploaded_file, sep=sep_char, skiprows=skip_rows, header=0 if has_header else None)
+            
+            # 数値以外のデータを除去
             df = df.apply(pd.to_numeric, errors='coerce').dropna()
-            if df.shape[1] >= 2:
-                x, y = df.iloc[:, 0].values, df.iloc[:, 1].values
+            
+            if df.shape[1] > max(col_x, col_y):
+                x = df.iloc[:, col_x].values
+                y = df.iloc[:, col_y].values
+                # X軸でソート（波長が降順の場合があるため）
                 idx = np.argsort(x)
                 data_list.append({'label': uploaded_file.name.split('.')[0], 'x': x[idx], 'y': y[idx]})
-        except Exception: continue
+        except Exception as e:
+            st.error(f"エラー: {uploaded_file.name} の読み込みに失敗しました。{e}")
+            continue
     return data_list
 
 def apply_processing(data_list, smooth, use_offset, offset_wl, convert_to_de, params_dict):
@@ -62,30 +70,41 @@ def main():
 
     if 'raw_data' not in st.session_state: st.session_state['raw_data'] = []
 
-    # --- サイドバー 1: データ管理 (最上部にアップロードを配置) ---
+    # --- サイドバー 1: データ管理 ---
     with st.sidebar:
         st.header("1. データ管理")
         
-        # アップロード機能を最上部へ
         files = st.file_uploader("CSV/TXTファイルをアップロード", accept_multiple_files=True)
+        
         if files:
-            with st.expander("インポート設定"):
+            # プレビュー機能：最初のファイルの生データを確認
+            with st.expander("ファイルの生データを確認 (プレビュー)"):
+                test_file = files[0]
+                test_file.seek(0)
+                lines = test_file.readlines()[:25] # 最初の25行
+                st.code("".join([line.decode('utf-8', errors='ignore') for line in lines]))
+                st.caption("※XYDATAの後の数値が何行目から始まっているか確認してください。")
+
+            with st.expander("インポート詳細設定", expanded=True):
                 sep = st.radio("区切り文字", ("タブ (tab)", "カンマ (comma)"))
-                skip = st.number_input("読み飛ばす行数 (Skip Rows)", 0, 100, 19)
-                head = st.checkbox("ヘッダーあり", True)
-            if st.button("ファイルを読み込む"):
-                st.session_state['raw_data'] = load_data(files, sep, skip, head)
+                skip = st.number_input("読み飛ばす行数 (スキップ)", 0, 100, 19)
+                head = st.checkbox("ヘッダー(列名)あり", False)
+                st.markdown("---")
+                col_x = st.number_input("X軸（波長）の列番号", 0, 10, 0, help="0から数えます")
+                col_y = st.number_input("Y軸（データ）の列番号", 0, 10, 1, help="0から数えます")
+            
+            if st.button("設定を反映して読み込む"):
+                st.session_state['raw_data'] = load_data(files, sep, skip, head, col_x, col_y)
 
         st.markdown("---")
         c1, c2 = st.columns(2)
         if c1.button("サンプル読み込み"): 
             st.session_state['raw_data'] = generate_cd_dummy_data()
         if c2.button("データをクリア"): 
-            st.session_state['raw_data'] = []
-            st.rerun()
+            st.session_state['raw_data'] = []; st.rerun()
 
     if not st.session_state['raw_data']:
-        st.info("👈 データをロードしてください。")
+        st.info("👈 左側のメニューからファイルをアップロードし、「読み込む」ボタンを押してください。")
         return
 
     # --- サイドバー 2: 選択と単位変換 ---
@@ -107,18 +126,15 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.header("2. グラフのカスタマイズ")
     
-    with st.sidebar.expander("軸・共通スタイルの設定", expanded=True):
+    with st.sidebar.expander("軸・共通スタイルの設定"):
         tick_dir = st.radio("目盛りの向き", ["in (内向き)", "out (外向き)", "inout (両側)"], index=0, horizontal=True)
-        # Matplotlib用に抽出
         t_dir = tick_dir.split()[0]
-        
         show_top_right = st.checkbox("枠囲みを表示 (上・右側)", value=True)
         show_legend = st.checkbox("凡例を表示", value=True)
         grid_on = st.checkbox("グリッド線を表示", value=False)
         x_lab = st.text_input("X軸ラベル", "Wavelength (nm)")
         y_lab = st.text_input("Y軸ラベル", r"$\Delta\epsilon$ (M$^{-1}$cm$^{-1}$)" if convert_de else "Ellipticity (mdeg)")
 
-    # 系列ごとの詳細設定
     line_configs = {}
     st.sidebar.subheader("系列別スタイル")
     for i, d in enumerate(target_data):
@@ -127,55 +143,41 @@ def main():
             col = st.color_picker("線の色", default_hex, key=f"col_{d['label']}")
             width = st.slider("線の太さ", 0.5, 5.0, 2.0, 0.5, key=f"width_{d['label']}")
             style = st.selectbox("線種", ["- (実線)", "-- (破線)", ": (点線)", "-. (一点鎖線)"], key=f"style_{d['label']}")
-            # 線種の記号のみ抽出
-            l_style = style.split()[0]
-            line_configs[d['label']] = {'color': col, 'lw': width, 'ls': l_style}
+            line_configs[d['label']] = {'color': col, 'lw': width, 'ls': style.split()[0]}
 
     # --- 描画実行 ---
     smooth = st.sidebar.slider("平滑化 (Smoothing)", 1, 31, 1, 2)
     processed_data = apply_processing(target_data, smooth, False, 350, convert_de, unit_params)
 
-    # Matplotlib 描画
     fig, ax = plt.subplots(figsize=(8, 5.5))
-    
-    # 基本設定
     ax.tick_params(direction=t_dir, top=show_top_right, right=show_top_right, labelsize=11)
     if not show_top_right:
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-    if grid_on:
-        ax.grid(True, linestyle=':', alpha=0.6)
-    
+    if grid_on: ax.grid(True, linestyle=':', alpha=0.6)
     ax.axhline(0, color='black', lw=0.8, alpha=0.3)
     
-    # プロット
     for d in processed_data:
         cfg = line_configs[d['label']]
-        ax.plot(d['x'], d['y'], label=d['label'], 
-                color=cfg['color'], linewidth=cfg['lw'], linestyle=cfg['ls'])
+        ax.plot(d['x'], d['y'], label=d['label'], color=cfg['color'], linewidth=cfg['lw'], linestyle=cfg['ls'])
 
     ax.set_xlabel(x_lab, fontsize=13)
     ax.set_ylabel(y_lab, fontsize=13)
-    
-    if show_legend:
-        ax.legend(frameon=False)
+    if show_legend: ax.legend(frameon=False)
     
     st.pyplot(fig)
 
     # --- エクスポート ---
     st.markdown("### 📥 エクスポート")
     c1, c2, c3 = st.columns(3)
-    
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
     c1.download_button("PNG画像 (300dpi) を保存", buf.getvalue(), "plot.png", "image/png")
-    
     tif_buf = io.BytesIO()
     fig.savefig(tif_buf, format="tiff", dpi=300, bbox_inches='tight')
     c2.download_button("TIFF画像を保存", tif_buf.getvalue(), "plot.tiff", "image/tiff")
-    
     csv_data = pd.DataFrame({d['label']: pd.Series(d['y'], index=d['x']) for d in processed_data})
-    c3.download_button("処理済みデータをCSVで保存", csv_data.to_csv(), "processed_data.csv", "text/csv")
+    c3.download_button("処理済みCSVを保存", csv_data.to_csv(), "processed_data.csv", "text/csv")
 
     plt.close(fig)
 
