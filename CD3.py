@@ -57,7 +57,7 @@ def apply_processing(data_list, smooth, use_offset, offset_wl, convert_to_de, pa
 # ---------------------------------------------------------
 def main():
     st.set_page_config(page_title="Advanced CD Plotter", layout="wide")
-    st.title("🧬 Professional CD Spectra Plotter")
+    st.title("🧬 CD Spectra Plotter")
 
     if 'raw_data' not in st.session_state: st.session_state['raw_data'] = []
 
