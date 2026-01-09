@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
+import io  # 画像保存用のバッファに使用
 
 # ページ設定
 st.set_page_config(page_title="Multi-Exp Lifetime Fitting", layout="wide")
@@ -10,9 +11,13 @@ st.set_page_config(page_title="Multi-Exp Lifetime Fitting", layout="wide")
 st.title("📉 Multi-Component Lifetime Fitting")
 st.markdown("発光寿命測定データに対し、複数の指数関数の和でフィッティングを行います。")
 
-# --- サイドバー: データ読み込み ---
-st.sidebar.header("Data Upload")
+# --- サイドバー: 設定項目 ---
+st.sidebar.header("1. Data Upload")
 uploaded_file = st.sidebar.file_uploader("CSVファイルをアップロード", type=["csv"])
+
+st.sidebar.header("2. Plot Settings")
+# 【機能追加】凡例のオンオフ
+show_legend = st.sidebar.checkbox("凡例を表示する", value=True)
 
 # --- 関数定義: 多成分指数関数モデル ---
 def create_multiexp_model(n, b_fixed):
@@ -140,9 +145,8 @@ if uploaded_file is not None:
 
             # Fit Curve
             if y_smooth is not None:
-                ax.plot(t_smooth, y_smooth, color='red', linewidth=2, label=f'Fit (n={n_components})')
+                ax.plot(t_smooth, y_smooth, color='red', linewidth=2, label=f'Total Fit (n={n_components})')
                 
-                # 各成分の表示
                 if n_components > 1:
                     for i in range(n_components):
                         y_comp = popt[2*i] * np.exp(-t_smooth / popt[2*i+1]) + b_value
@@ -152,16 +156,30 @@ if uploaded_file is not None:
             ax.set_title(f"Decay Fit (n={n_components})")
             ax.set_xlabel("Time (μs)")
             ax.set_ylabel("Intensity (Volt)")
-            ax.legend(loc='upper right', fontsize='small')
+            
+            # 【機能追加】凡例のオンオフ
+            if show_legend:
+                ax.legend(loc='upper right', fontsize='small', frameon=False)
+            
             ax.grid(True, which="both", ls="-", alpha=0.2)
 
             if is_log:
                 ax.set_yscale('log')
-                # ログスケール時の表示範囲調整（0以下があるとエラーになるため）
                 ymin = max(df['Intensity'].min(), 1e-6)
                 ax.set_ylim(bottom=ymin)
 
+            # グラフ表示
             st.pyplot(fig)
+
+            # 【機能追加】画像のダウンロード
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
+            st.download_button(
+                label="📊 プロットを画像(PNG)として保存",
+                data=buf.getvalue(),
+                file_name=f"lifetime_fit_n{n_components}.png",
+                mime="image/png"
+            )
 
     except Exception as e:
         st.error(f"Error: {e}")
