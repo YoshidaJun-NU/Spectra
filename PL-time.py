@@ -2,175 +2,168 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 from scipy.optimize import curve_fit
-import io
 
-# ---------------------------------------------------------
-# 1. ページ設定と基本スタイル
-# ---------------------------------------------------------
-st.set_page_config(page_title="Lifetime Fitting Pro", layout="wide")
+# ページ設定
+st.set_page_config(page_title="Multi-Exp Lifetime Fitting", layout="wide")
+
 st.title("📉 Multi-Component Lifetime Fitting")
+st.markdown("発光寿命測定データに対し、複数の指数関数の和でフィッティングを行います。")
 
-# ---------------------------------------------------------
-# 2. 関数定義
-# ---------------------------------------------------------
-def load_smart_csv(uploaded_file):
+# --- サイドバー: データ読み込み ---
+st.sidebar.header("Data Upload")
+uploaded_file = st.sidebar.file_uploader("CSVファイルをアップロード", type=["csv"])
+
+# --- 関数定義: 多成分指数関数モデル ---
+def create_multiexp_model(n, b_fixed):
+    def model(t, *params):
+        t_arr = np.array(t)
+        y = np.full(t_arr.shape, b_fixed, dtype=np.float64)
+        for i in range(n):
+            A = params[2*i]
+            tau = params[2*i+1]
+            if abs(tau) < 1e-9:
+                term = np.zeros_like(t_arr)
+            else:
+                term = A * np.exp(-t_arr / tau)
+            y += term
+        return y
+    return model
+
+# --- メイン処理 ---
+if uploaded_file is not None:
     try:
-        content = uploaded_file.read().decode('utf-8', errors='ignore')
-        uploaded_file.seek(0)
-        lines = content.splitlines()
-        data_start_idx = 0
-        for i, line in enumerate(lines):
-            parts = line.replace('\t', ',').split(',')
-            try:
-                if len(parts) >= 2 and float(parts[0].strip()) is not None:
-                    data_start_idx = i
-                    break
-            except: continue
+        df = pd.read_csv(uploaded_file, skiprows=1, header=None)
         
-        df = pd.read_csv(uploaded_file, skiprows=data_start_idx, header=None, sep=None, engine='python')
-        df = df.apply(pd.to_numeric, errors='coerce').dropna()
-        df.columns = [f"Col_{i}" for i in range(df.shape[1])]
-        return df
-    except Exception as e:
-        st.error(f"読み込みエラー: {e}")
-        return None
+        if df.shape[1] >= 2:
+            df = df.iloc[:, :2].copy()
+            df.columns = ['Time', 'Intensity']
+            df['Time'] = pd.to_numeric(df['Time'], errors='coerce')
+            df['Intensity'] = pd.to_numeric(df['Intensity'], errors='coerce')
+            df.dropna(inplace=True)
+        else:
+            st.error("データ列が不足しています。")
+            st.stop()
 
-def multi_exp_model(t, b, *params):
-    y = b
-    for i in range(0, len(params), 2):
-        A = params[i]
-        tau = params[i+1]
-        y += A * np.exp(-t / tau)
-    return y
+        col_graph, col_ctrl = st.columns([2, 1])
 
-# ---------------------------------------------------------
-# 3. サイドバー設定
-# ---------------------------------------------------------
-st.sidebar.header("1. Data Import")
-uploaded_file = st.sidebar.file_uploader("寿命測定データをアップロード", type=["csv", "txt", "dat"])
+        with col_ctrl:
+            st.subheader("Fitting Parameters")
+            n_components = st.selectbox("Number of Components (n)", options=[1, 2, 3, 4, 5], index=0)
 
-st.sidebar.header("2. Global Style")
-with st.sidebar.expander("文字・グラフ設定"):
-    font_family = st.selectbox("Font Family", ["sans-serif", "serif", "monospace"])
-    base_size = st.slider("基本文字サイズ", 8, 30, 14)
-    label_size = st.slider("軸ラベルサイズ", 8, 40, 18)
-    line_width = st.slider("線の太さ (Fit)", 1.0, 5.0, 2.0)
-    # 凡例のオンオフ設定
-    show_legend = st.checkbox("凡例を表示する", value=True)
+            lowest_5_percent = df['Intensity'].nsmallest(int(len(df) * 0.05))
+            default_b = float(lowest_5_percent.mean())
 
-# ---------------------------------------------------------
-# 4. メイン処理
-# ---------------------------------------------------------
-if uploaded_file:
-    df = load_smart_csv(uploaded_file)
-    
-    if df is not None:
-        # 列選択
-        st.sidebar.header("3. Column Selection")
-        col_options = df.columns.tolist()
-        x_col = st.sidebar.selectbox("Time 軸 (X)", col_options, index=0)
-        y_col = st.sidebar.selectbox("Intensity 軸 (Y)", col_options, index=1)
-        
-        # フィッティング設定
-        st.sidebar.header("4. Fitting Settings")
-        n_comp = st.sidebar.selectbox("成分数 (n)", [1, 2, 3], index=0)
-        
-        _, main_col, _ = st.columns([0.05, 0.9, 0.05])
-        
-        with main_col:
-            t_min, t_max = float(df[x_col].min()), float(df[x_col].max())
-            idx_peak = df[y_col].idxmax()
-            t_peak = float(df.loc[idx_peak, x_col])
-            
-            fit_range = st.slider("Fitting Range (μs)", t_min, t_max, (t_peak, t_max))
-            
-            mask = (df[x_col] >= fit_range[0]) & (df[x_col] <= fit_range[1])
+            st.markdown("#### 1. Baseline ($b$)")
+            b_value = st.number_input("Baseline Value (Volt)", value=default_b, format="%.6e")
+
+            st.markdown("#### 2. Time Range")
+            idx_max = df['Intensity'].idxmax()
+            t_at_max = df.loc[idx_max, 'Time']
+            t_end = df['Time'].max()
+            t_min_file = df['Time'].min()
+
+            fit_range = st.slider(
+                "Fitting Range (μs)",
+                min_value=float(t_min_file),
+                max_value=float(t_end),
+                value=(float(t_at_max), float(t_end)),
+                step=0.01
+            )
+            t_start_fit, t_end_fit = fit_range
+
+            mask = (df['Time'] >= t_start_fit) & (df['Time'] <= t_end_fit)
             df_fit = df[mask].copy()
-            
-            # フィッティング実行
-            b_init = df[y_col].min()
-            p0 = [b_init]
-            bounds_l, bounds_u = [0], [np.inf]
-            for i in range(n_comp):
-                p0.extend([df_fit[y_col].max() / n_comp, (fit_range[1]-fit_range[0])/ (i+2)])
-                bounds_l.extend([0, 1e-9])
-                bounds_u.extend([np.inf, np.inf])
 
-            fit_success = False
+            if len(df_fit) == 0:
+                st.warning("選択された範囲にデータがありません。")
+                st.stop()
+
+            y_max_range = df_fit['Intensity'].max() - b_value
+            time_span = t_end_fit - t_start_fit
+            if time_span <= 0: time_span = 1.0
+
+            p0, bounds_min, bounds_max = [], [], []
+            for i in range(n_components):
+                p0.append(y_max_range / n_components)
+                p0.append(time_span / (2 * (5 ** i)))
+                bounds_min.extend([0, 1e-6]) 
+                bounds_max.extend([np.inf, np.inf])
+
+            fit_func = create_multiexp_model(n_components, b_value)
+
             try:
-                popt, pcov = curve_fit(multi_exp_model, df_fit[x_col], df_fit[y_col], p0=p0, bounds=(bounds_l, bounds_u))
-                fit_success = True
-            except:
-                st.error("フィッティングに失敗しました。")
-
-            # --- グラフ描画 ---
-            plt.rcParams['font.family'] = font_family
-            plt.rcParams['font.size'] = base_size
-            
-            fig, ax = plt.subplots(figsize=(10, 6))
-            is_log = st.checkbox("Y軸をログスケールにする", value=True)
-            
-            ax.scatter(df[x_col], df[y_col], s=5, color='gray', alpha=0.3, label='Raw Data')
-            
-            if fit_success:
-                t_plot = np.linspace(fit_range[0], fit_range[1], 500)
-                y_plot = multi_exp_model(t_plot, *popt)
-                ax.plot(t_plot, y_plot, color='red', lw=line_width, label=f'Total Fit (n={n_comp})')
+                popt, pcov = curve_fit(
+                    fit_func, df_fit['Time'].values, df_fit['Intensity'].values, 
+                    p0=p0, bounds=(bounds_min, bounds_max), maxfev=10000
+                )
                 
-                if n_comp > 1:
-                    colors = ['blue', 'green', 'orange']
-                    for i in range(n_comp):
-                        A_i = popt[2*i+1]
-                        tau_i = popt[2*i+2]
-                        y_comp = popt[0] + A_i * np.exp(-t_plot / tau_i)
-                        ax.plot(t_plot, y_comp, '--', lw=1, color=colors[i%3], label=f'Comp {i+1} (τ={tau_i:.3f})')
+                st.markdown("### Results")
+                st.latex(r"I(t) = \sum_{i=1}^{" + str(n_components) + r"} A_i e^{-t/\tau_i} + b")
+
+                residuals = df_fit['Intensity'].values - fit_func(df_fit['Time'].values, *popt)
+                r_squared = 1 - (np.sum(residuals**2) / np.sum((df_fit['Intensity'].values - df_fit['Intensity'].mean())**2))
+                
+                st.write(f"**$R^2$**: {r_squared:.5f}")
+                st.write(f"**Fixed $b$**: {b_value:.4e}")
+
+                res_data = []
+                for i in range(n_components):
+                    res_data.append({
+                        "Component": f"Comp {i+1}",
+                        "Tau (μs)": f"{popt[2*i+1]:.4f}",
+                        "Amplitude (A)": f"{popt[2*i]:.4e}"
+                    })
+                st.table(pd.DataFrame(res_data))
+
+                t_smooth = np.linspace(t_start_fit, t_end_fit, 1000)
+                y_smooth = fit_func(t_smooth, *popt)
+
+            except Exception as e:
+                st.error(f"Fitting Failed: {e}")
+                y_smooth = None
+
+        # ---------------------------------------------------------
+        # 3. グラフ描画 (Matplotlib版)
+        # ---------------------------------------------------------
+        with col_graph:
+            is_log = st.checkbox("Log Scale Y-axis", value=False)
             
-            ax.set_xlabel("Time (μs)", fontsize=label_size)
-            ax.set_ylabel("Intensity", fontsize=label_size)
-            if is_log: ax.set_yscale('log')
-            
-            # 凡例のオンオフ制御
-            if show_legend:
-                ax.legend(frameon=False)
-            
+            # Figureの作成
+            fig, ax = plt.subplots(figsize=(8, 6))
+
+            # Raw Data
+            ax.plot(df['Time'], df['Intensity'], color='lightgray', label='Raw Data', linewidth=1, alpha=0.7)
+
+            # Selected Data
+            ax.scatter(df_fit['Time'], df_fit['Intensity'], color='blue', s=2, alpha=0.3, label='Fitting Region')
+
+            # Fit Curve
+            if y_smooth is not None:
+                ax.plot(t_smooth, y_smooth, color='red', linewidth=2, label=f'Fit (n={n_components})')
+                
+                # 各成分の表示
+                if n_components > 1:
+                    for i in range(n_components):
+                        y_comp = popt[2*i] * np.exp(-t_smooth / popt[2*i+1]) + b_value
+                        ax.plot(t_smooth, y_comp, linestyle='--', linewidth=1, label=f'Comp {i+1} (τ={popt[2*i+1]:.2f})')
+
+            # グラフの装飾
+            ax.set_title(f"Decay Fit (n={n_components})")
+            ax.set_xlabel("Time (μs)")
+            ax.set_ylabel("Intensity (Volt)")
+            ax.legend(loc='upper right', fontsize='small')
+            ax.grid(True, which="both", ls="-", alpha=0.2)
+
+            if is_log:
+                ax.set_yscale('log')
+                # ログスケール時の表示範囲調整（0以下があるとエラーになるため）
+                ymin = max(df['Intensity'].min(), 1e-6)
+                ax.set_ylim(bottom=ymin)
+
             st.pyplot(fig)
 
-            # --- 画像ダウンロード機能 ---
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
-            st.download_button(
-                label="画像を保存 (PNG)",
-                data=buf.getvalue(),
-                file_name=f"lifetime_fit_n{n_comp}.png",
-                mime="image/png"
-            )
-
-            # --- 結果表示 ---
-            if fit_success:
-                st.subheader("Fitting Results")
-                cols = st.columns(n_comp + 1)
-                cols[0].metric("Baseline (b)", f"{popt[0]:.4e}")
-                for i in range(n_comp):
-                    cols[i+1].metric(f"Component {i+1} (τ)", f"{popt[2*i+2]:.4f} μs")
-                
-                res_df = pd.DataFrame({
-                    "Parameter": ["Baseline"] + [f"Amp {i+1}" for i in range(n_comp)] + [f"Tau {i+1}" for i in range(n_comp)],
-                    "Value": [f"{popt[0]:.4e}"] + [f"{popt[2*i+1]:.4e}" for i in range(n_comp)] + [f"{popt[2*i+2]:.4e}" for i in range(n_comp)]
-                })
-                st.table(res_df)
-
+    except Exception as e:
+        st.error(f"Error: {e}")
 else:
-    st.info("👈 サイドバーからデータをアップロードしてください。")
-
-# ---------------------------------------------------------
-# 5. 説明（最下部）
-# ---------------------------------------------------------
-st.divider()
-st.subheader("📖 使い方")
-st.markdown("""
-1. **画像のダウンロード**: グラフの下にある「画像を保存 (PNG)」ボタンを押すと、300DPIの高解像度画像が保存されます。
-2. **凡例の表示切り替え**: サイドバーの「文字・グラフ設定」内にあるチェックボックスで、凡例の表示/非表示を切り替えられます。
-3. **対数表示**: グラフ上のチェックボックスでY軸のログスケールを切り替え可能です。
-""")
+    st.info("👈 Please upload a CSV file.")
