@@ -48,7 +48,7 @@ def load_data_robust(file_path_or_buffer, sep, header, encoding):
 # アプリ設定
 # ---------------------------------------------------------
 st.set_page_config(page_title="Advanced DSC Plotter", layout="wide")
-st.title("Scientific Graph Plotter (DSC)")
+st.title("DSC Graph Plotter")
 
 # --- サイドバー: 設定 ---
 st.sidebar.header("1. データ読み込み")
@@ -78,7 +78,7 @@ if target_file:
         # --- スタイル設定（追加項目） ---
         st.sidebar.markdown("---")
         st.sidebar.subheader("3. 表示スタイル")
-        tick_dir = st.sidebar.radio("目盛の向き", ["in (内向き)", "out (外向き)"], index=0, horizontal=True).split()[0]
+        tick_dir = st.sidebar.radio("目盛の向き", ["in (内向き)", "out (外向き)"], index=1, horizontal=True).split()[0]
         line_width = st.sidebar.slider("線の太さ", 0.5, 5.0, 1.5, 0.5)
         font_size = st.sidebar.slider("文字の大きさ", 8, 24, 12, 1)
         
@@ -122,7 +122,7 @@ if target_file:
 
         # グラフ描画実行
         with graph_area:
-            st.subheader("グラフプレビュー")
+            # st.subheader("グラフプレビュー")
             # 左右に20%ずつのマージンを設けて中央60%を使用（以前の8割程度のサイズ感）
             _, center_col, _ = st.columns([0.2, 0.6, 0.2])
             
