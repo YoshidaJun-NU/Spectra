@@ -2,16 +2,16 @@ import streamlit as st
 
 # ページの基本設定（タブに表示される名前やアイコン）
 st.set_page_config(
-    page_title="分光解析プラットフォーム",
+    page_title="分光解析",
     page_icon="🧪",
     layout="wide"
 )
 
-st.title("🧪 分光解析総合プラットフォーム")
+st.title("🧪 分光解析 spectra")
 
 st.markdown("""
 ### ようこそ
-このアプリでは、各種分光データの解析を統合して行えます。
+各種分光データの解析を行います。
 左側のサイドメニューから、使用したい解析ツールを選択してください。
 
 ---
