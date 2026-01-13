@@ -53,7 +53,7 @@ def generate_dummy_data():
         # ピーク検出テスト用に小さなピークを追加
         y += 0.05 * np.exp(-((x - (center - 50))**2) / (2 * 5**2))
         
-        df = pd.DataFrame({'Wavelength': x, 'Abs': y})
+        df = pd.DataFrame({'Wavelength': x, 'Intensity': y})
         data_list.append({
             'label': f'Dummy_Sample_{i}',
             'x': x,
