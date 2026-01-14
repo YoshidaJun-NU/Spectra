@@ -62,7 +62,7 @@ def load_data(uploaded_files):
 # ---------------------------------------------------------
 def main():
     st.set_page_config(page_title="UV-Vis Solver Pro", layout="wide")
-    st.title("UV-Vis Spectrum Deconvolution (Plotly) 🧬")
+    st.title("Spectrum Deconvolution 📊")
 
     if 'data_list' not in st.session_state:
         st.session_state['data_list'] = []
