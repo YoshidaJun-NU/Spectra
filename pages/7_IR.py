@@ -18,7 +18,6 @@ def multi_gaussian(x, *params):
     return y
 
 def trans_to_abs(y_trans):
-    """透過率(%)を吸光度(Abs)に変換する。0以下は微小値でクリップ。"""
     y_clamped = np.clip(y_trans, 1e-5, 100.0)
     return 2.0 - np.log10(y_clamped)
 
@@ -86,33 +85,38 @@ def main():
         st.info("👈 左側のサイドバーからファイルをアップロードしてください。")
         return
 
-    # --- サイドバー：2. 表示設定 ---
-    st.sidebar.header("2. グラフ表示設定")
+    # --- サイドバー：2. 表示・スタイル設定 ---
+    st.sidebar.header("2. グラフ・スタイル設定")
     all_labels = [d['label'] for d in st.session_state['data_list']]
     selected = st.sidebar.multiselect("表示ファイル", all_labels, default=all_labels)
-
     y_mode = st.sidebar.radio("縦軸モード", ["Transmittance (%)", "Absorbance"], index=0)
 
-    # 横軸の範囲設定
-    st.sidebar.subheader("横軸の範囲 (X-axis)")
-    col_x1, col_x2 = st.sidebar.columns(2)
-    x_max_def = col_x1.number_input("開始 (左)", value=4000.0)
-    x_min_def = col_x2.number_input("終了 (右)", value=400.0)
+    # 軸範囲設定
+    with st.sidebar.expander("軸の範囲設定"):
+        col_x1, col_x2 = columns = st.columns(2)
+        x_max_def = col_x1.number_input("横軸 開始", value=4000.0)
+        x_min_def = col_x2.number_input("横軸 終了", value=400.0)
+        
+        y_min_val, y_max_val = (0.0, 2.0) if y_mode == "Absorbance" else (0.0, 105.0)
+        col_y1, col_y2 = st.columns(2)
+        y_min_input = col_y1.number_input("縦軸 最小", value=float(y_min_val))
+        y_max_input = col_y2.number_input("縦軸 最大", value=float(y_max_val))
 
-    # 【追加】縦軸の範囲設定
-    st.sidebar.subheader("縦軸の範囲 (Y-axis)")
-    col_y1, col_y2 = st.sidebar.columns(2)
-    # デフォルト値は、モードによって切り替える
-    if y_mode == "Absorbance":
-        y_min_val, y_max_val = 0.0, 2.0
-    else:
-        y_min_val, y_max_val = 0.0, 105.0
-
-    y_min_input = col_y1.number_input("最小値", value=y_min_val)
-    y_max_input = col_y2.number_input("最大値", value=y_max_val)
+    # 個別スタイル設定
+    plot_configs = {}
+    if selected:
+        st.sidebar.subheader("個別プロット設定")
+        for label in selected:
+            with st.sidebar.expander(f"設定: {label}"):
+                c1, c2 = st.columns(2)
+                color = c1.color_picker("色", key=f"clr_{label}")
+                ls = c2.selectbox("線種", ["-", "--", "-.", ":"], key=f"ls_{label}")
+                lw = c1.slider("太さ", 0.5, 5.0, 1.5, key=f"lw_{label}")
+                offset = c2.number_input("Yオフセット", value=0.0, step=0.1, key=f"off_{label}")
+                plot_configs[label] = {"color": color, "ls": ls, "lw": lw, "offset": offset}
 
     # --- サイドバー：3. 解析機能 ---
-    st.sidebar.header("3. 解析・補正")
+    st.sidebar.header("3. 解析")
     do_fit = st.sidebar.checkbox("マルチガウスフィッティング")
     num_peaks = st.sidebar.number_input("ピーク数", 1, 10, 1)
     fit_target = st.sidebar.selectbox("解析対象ファイル", selected) if selected else None
@@ -123,19 +127,24 @@ def main():
         display_data = [d for d in st.session_state['data_list'] if d['label'] in selected]
 
         for item in display_data:
+            label = item['label']
             x, y = item['x'], item['y'].copy()
+            conf = plot_configs[label]
 
-            current_y_label = y_mode
+            # 縦軸変換
             if y_mode == "Absorbance":
                 if np.max(y) > 10: 
                     y = trans_to_abs(y)
-            else:
-                current_y_label = "Transmittance (%)"
+            
+            # オフセット適用
+            y_plotted = y + conf['offset']
 
-            ax.plot(x, y, label=item['label'], alpha=0.8)
+            # プロット
+            ax.plot(x, y_plotted, label=label, 
+                    color=conf['color'], linestyle=conf['ls'], linewidth=conf['lw'])
 
-            # フィッティング
-            if do_fit and item['label'] == fit_target:
+            # フィッティング (オフセットなしの元のyに対して計算し、描画時にオフセットを加える)
+            if do_fit and label == fit_target:
                 mask = (x >= min(x_min_def, x_max_def)) & (x <= max(x_min_def, x_max_def))
                 xf, yf = x[mask], y[mask]
                 try:
@@ -146,24 +155,21 @@ def main():
                         p0.extend([yf[idx], xf[idx], 5.0])
                     p0.append(np.mean(yf))
                     popt, _ = curve_fit(multi_gaussian, xf, yf, p0=p0)
-                    ax.plot(xf, multi_gaussian(xf, *popt), 'r--', label="Fit Result")
+                    # フィッティング曲線にもオフセットを適用
+                    ax.plot(xf, multi_gaussian(xf, *popt) + conf['offset'], 
+                            color=conf['color'], linestyle="--", alpha=0.7)
                 except:
-                    st.sidebar.warning(f"Fitting failed for {item['label']}")
+                    st.sidebar.warning(f"Fitting failed for {label}")
 
-        # 軸ラベルの設定
         ax.set_xlabel(display_data[0].get('x_unit', "Wavenumber (cm⁻¹)"))
-        ax.set_ylabel(current_y_label)
-        
-        # 軸範囲の適用
-        ax.set_xlim(x_max_def, x_min_def) # 横軸 (IR慣習で反転)
-        ax.set_ylim(y_min_input, y_max_input) # 【追加】縦軸
-        
+        ax.set_ylabel(y_mode)
+        ax.set_xlim(x_max_def, x_min_def)
+        ax.set_ylim(y_min_input, y_max_input)
         ax.grid(True, linestyle=':', alpha=0.6)
         ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         
         st.pyplot(fig)
 
-        # 保存用
         buf = io.BytesIO()
         plt.savefig(buf, format='png', bbox_inches='tight', dpi=300)
         st.download_button("グラフ保存 (PNG)", buf.getvalue(), "ir_analysis.png")
