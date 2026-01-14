@@ -23,7 +23,7 @@ def trans_to_abs(y_trans):
     return 2.0 - np.log10(y_clamped)
 
 # ---------------------------------------------------------
-# 2. データ読み込み (IR/UV両対応 & 単位取得)
+# 2. データ読み込み
 # ---------------------------------------------------------
 def load_data(uploaded_files):
     data_list = []
@@ -91,14 +91,25 @@ def main():
     all_labels = [d['label'] for d in st.session_state['data_list']]
     selected = st.sidebar.multiselect("表示ファイル", all_labels, default=all_labels)
 
-    # 縦軸の切替 (デフォルト: Transmittance)
     y_mode = st.sidebar.radio("縦軸モード", ["Transmittance (%)", "Absorbance"], index=0)
 
-    # 横軸の範囲設定 (デフォルト: 4000 to 400)
-    st.sidebar.subheader("表示範囲 (横軸)")
+    # 横軸の範囲設定
+    st.sidebar.subheader("横軸の範囲 (X-axis)")
     col_x1, col_x2 = st.sidebar.columns(2)
-    x_max_def = col_x1.number_input("開始", value=4000.0)
-    x_min_def = col_x2.number_input("終了", value=400.0)
+    x_max_def = col_x1.number_input("開始 (左)", value=4000.0)
+    x_min_def = col_x2.number_input("終了 (右)", value=400.0)
+
+    # 【追加】縦軸の範囲設定
+    st.sidebar.subheader("縦軸の範囲 (Y-axis)")
+    col_y1, col_y2 = st.sidebar.columns(2)
+    # デフォルト値は、モードによって切り替える
+    if y_mode == "Absorbance":
+        y_min_val, y_max_val = 0.0, 2.0
+    else:
+        y_min_val, y_max_val = 0.0, 105.0
+
+    y_min_input = col_y1.number_input("最小値", value=y_min_val)
+    y_max_input = col_y2.number_input("最大値", value=y_max_val)
 
     # --- サイドバー：3. 解析機能 ---
     st.sidebar.header("3. 解析・補正")
@@ -114,20 +125,16 @@ def main():
         for item in display_data:
             x, y = item['x'], item['y'].copy()
 
-            # 縦軸変換（吸光度モードの場合）
-            # もともと吸光度のデータ(UVなど)の場合はそのまま、透過率なら変換
             current_y_label = y_mode
             if y_mode == "Absorbance":
-                # データが透過率(100付近)なら変換、そうでなければAbsとみなす
                 if np.max(y) > 10: 
                     y = trans_to_abs(y)
             else:
                 current_y_label = "Transmittance (%)"
 
-            # プロット
             ax.plot(x, y, label=item['label'], alpha=0.8)
 
-            # フィッティング (表示範囲内で行う)
+            # フィッティング
             if do_fit and item['label'] == fit_target:
                 mask = (x >= min(x_min_def, x_max_def)) & (x <= max(x_min_def, x_max_def))
                 xf, yf = x[mask], y[mask]
@@ -143,19 +150,20 @@ def main():
                 except:
                     st.sidebar.warning(f"Fitting failed for {item['label']}")
 
-        # 軸の仕上げ
+        # 軸ラベルの設定
         ax.set_xlabel(display_data[0].get('x_unit', "Wavenumber (cm⁻¹)"))
         ax.set_ylabel(current_y_label)
         
-        # 横軸範囲の手動適用 (IR標準で大きい方から小さい方へ)
-        ax.set_xlim(x_max_def, x_min_def)
+        # 軸範囲の適用
+        ax.set_xlim(x_max_def, x_min_def) # 横軸 (IR慣習で反転)
+        ax.set_ylim(y_min_input, y_max_input) # 【追加】縦軸
         
         ax.grid(True, linestyle=':', alpha=0.6)
         ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         
         st.pyplot(fig)
 
-        # 保存
+        # 保存用
         buf = io.BytesIO()
         plt.savefig(buf, format='png', bbox_inches='tight', dpi=300)
         st.download_button("グラフ保存 (PNG)", buf.getvalue(), "ir_analysis.png")
