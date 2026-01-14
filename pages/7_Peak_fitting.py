@@ -6,7 +6,7 @@ import io
 from scipy.optimize import curve_fit
 
 # ---------------------------------------------------------
-# 1. モデル関数
+# 1. フィッティング用モデル関数
 # ---------------------------------------------------------
 def gaussian(x, amp, cen, sigma):
     return amp * np.exp(-(x - cen)**2 / (2 * sigma**2))
@@ -26,7 +26,7 @@ def multi_model(x, *params, model_type="Gaussian"):
     return y + offset
 
 # ---------------------------------------------------------
-# 2. データ読み込み (JASCO形式)
+# 2. データ読み込みロジック (JASCO形式)
 # ---------------------------------------------------------
 def load_data(uploaded_files):
     data_list = []
@@ -37,44 +37,44 @@ def load_data(uploaded_files):
                 try: text = content.decode(enc); break
                 except: continue
             lines = text.splitlines()
-            x_unit, y_unit = "Wavelength/Wavenumber", "Intensity"
             use_skip = 0
             for i, line in enumerate(lines):
-                if 'XUNITS' in line: x_unit = line.split()[-1].strip(',')
-                if 'YUNITS' in line: y_unit = line.split()[-1].strip(',')
                 if 'XYDATA' in line:
                     use_skip = i + 1
                     break
+            
+            # タブ、カンマ、スペース区切りに対応
             df = pd.read_csv(io.StringIO(text), sep=None, skiprows=use_skip, header=None, engine='python')
             df = df.apply(pd.to_numeric, errors='coerce').dropna()
+            
             if df.shape[1] >= 2:
                 data_list.append({
                     'label': f.name.rsplit('.', 1)[0],
-                    'x': df.iloc[:, 0].values, 'y': df.iloc[:, 1].values,
-                    'x_unit': x_unit, 'y_unit': y_unit
+                    'x': df.iloc[:, 0].values, 
+                    'y': df.iloc[:, 1].values
                 })
         except Exception as e:
-            st.error(f"Error loading {f.name}: {e}")
+            st.error(f"読み込みエラー: {f.name} ({e})")
     return data_list
 
 # ---------------------------------------------------------
 # 3. メインアプリ
 # ---------------------------------------------------------
 def main():
-    st.set_page_config(page_title="Spectra Solver Plotly", layout="wide")
-    st.title("Interactive Spectra Solver Pro 🧬")
+    st.set_page_config(page_title="UV-Vis Solver Pro", layout="wide")
+    st.title("UV-Vis Spectrum Deconvolution (Plotly) 🧬")
 
     if 'data_list' not in st.session_state:
         st.session_state['data_list'] = []
 
-    # サイドバー：1. データ
+    # サイドバー：1. データ読み込み
     st.sidebar.header("1. データ管理")
-    files = st.sidebar.file_uploader("ファイルをアップロード", accept_multiple_files=True)
+    files = st.sidebar.file_uploader("JASCO形式ファイルをアップロード", accept_multiple_files=True)
     if files and st.sidebar.button("データを読み込む"):
         st.session_state['data_list'] = load_data(files)
 
     if not st.session_state['data_list']:
-        st.info("👈 左側のサイドバーからデータを読み込んでください。")
+        st.info("👈 左側のサイドバーからデータをアップロードしてください。")
         return
 
     # サイドバー：2. フィッティング設定
@@ -83,44 +83,51 @@ def main():
     target = st.sidebar.selectbox("解析対象データ", all_labels)
     data_item = next(d for d in st.session_state['data_list'] if d['label'] == target)
     
-    func_mode = st.sidebar.radio("使用する関数", ["Gaussian", "Lorentzian"])
+    func_mode = st.sidebar.radio("関数選択", ["Gaussian", "Lorentzian"])
     num_peaks = st.sidebar.number_input("ピーク数", 1, 5, 2)
 
-    # 解析範囲の設定
-    st.sidebar.subheader("解析範囲")
+    # 解析範囲の指定（数値入力）
+    st.sidebar.subheader("解析範囲 (nm)")
     x_min_data, x_max_data = float(data_item['x'].min()), float(data_item['x'].max())
     col1, col2 = st.sidebar.columns(2)
-    input_start = col1.number_input("開始", value=x_min_data)
-    input_end = col2.number_input("終了", value=x_max_data)
+    input_start = col1.number_input("開始(nm)", value=x_min_data)
+    input_end = col2.number_input("終了(nm)", value=x_max_data)
     
-    # 予想Center位置の設定
-    st.sidebar.subheader("予想Center位置")
+    # 予想Center位置
+    st.sidebar.subheader("予想Center位置 (nm)")
     manual_centers = []
     for n in range(num_peaks):
         default_c = input_start + (input_end - input_start) * (n+1)/(num_peaks+1)
         c_val = st.sidebar.number_input(f"Peak {n+1} Center", value=float(default_c), key=f"c_{n}")
         manual_centers.append(c_val)
 
-    # --- Plotlyグラフの作成 ---
+    # --- Plotlyグラフ作成 ---
     fig = go.Figure()
-    x, y = data_item['x'], data_item['y'].copy()
+    x_all, y_all = data_item['x'], data_item['y']
 
-    # オリジナルデータ
-    fig.add_trace(go.Scatter(x=x, y=y, name="Experimental", mode='lines', line=dict(color='gray', width=1), opacity=0.5))
+    # 元データプロット
+    fig.add_trace(go.Scatter(
+        x=x_all, y=y_all, 
+        name="Experimental", 
+        mode='lines', 
+        line=dict(color='gray', width=1.5), 
+        opacity=0.4
+    ))
 
     if st.sidebar.checkbox("フィッティング開始"):
-        # 範囲選択（数値入力に基づきマスクを作成）
-        mask = (x >= min(input_start, input_end)) & (x <= max(input_start, input_end))
-        xf, yf = x[mask], y[mask]
+        # 範囲フィルタリング
+        mask = (x_all >= min(input_start, input_end)) & (x_all <= max(input_start, input_end))
+        xf, yf = x_all[mask], y_all[mask]
 
         try:
             p0 = []
             lower, upper = [], []
             for c_init in manual_centers:
-                p0.extend([np.max(yf), c_init, abs(input_end-input_start)/20])
-                lower.extend([0, c_init - 50, 0.1])
-                upper.extend([np.inf, c_init + 50, 200.0])
-            p0.append(np.min(yf))
+                # [Amp, Center, Sigma]
+                p0.extend([np.max(yf), c_init, abs(input_end-input_start)/30])
+                lower.extend([0, c_init - 50, 0.05])
+                upper.extend([np.inf, c_init + 50, 150.0])
+            p0.append(np.min(yf)) # offset
             lower.append(-np.inf); upper.append(np.inf)
 
             popt, _ = curve_fit(
@@ -128,44 +135,67 @@ def main():
                 xf, yf, p0=p0, bounds=(lower, upper), maxfev=15000
             )
 
-            # フィッティング合計曲線
-            x_fine = np.linspace(min(input_start, input_end), max(input_start, input_end), 800)
-            y_fit = multi_model(x_fine, *popt, model_type=func_mode)
-            fig.add_trace(go.Scatter(x=x_fine, y=y_fit, name="Total Fit", line=dict(color='red', width=2.5)))
+            # 解析範囲での描画用データ
+            x_range_vals = np.linspace(min(input_start, input_end), max(input_start, input_end), 1000)
+            y_total_fit = multi_model(x_range_vals, *popt, model_type=func_mode)
+            
+            # 合計曲線
+            fig.add_trace(go.Scatter(x=x_range_vals, y=y_total_fit, name="Total Fit", line=dict(color='red', width=3)))
 
-            # 個別ピーク
+            # 各成分ピークの描画
             res_list = []
             for n in range(num_peaks):
-                p_peak = list(popt[n*3:(n+1)*3]) + [popt[-1]]
-                y_p = multi_model(x_fine, *p_peak, model_type=func_mode)
-                fig.add_trace(go.Scatter(x=x_fine, y=y_p, name=f"Peak {n+1}", fill='tozeroy', opacity=0.3))
-                fwhm = 2.355*popt[n*3+2] if func_mode == "Gaussian" else 2*popt[n*3+2]
-                res_list.append({"Peak": n+1, "Center": f"{popt[n*3+1]:.2f}", "FWHM": f"{fwhm:.2f}"})
+                p_single = list(popt[n*3:(n+1)*3]) + [popt[-1]]
+                y_single = multi_model(x_range_vals, *p_single, model_type=func_mode)
+                
+                fig.add_trace(go.Scatter(
+                    x=x_range_vals, y=y_single, 
+                    name=f"Peak {n+1}", 
+                    fill='tozeroy', 
+                    opacity=0.3
+                ))
+                
+                fwhm = (2.355 * popt[n*3+2]) if func_mode == "Gaussian" else (2 * popt[n*3+2])
+                res_list.append({
+                    "Peak": n+1, 
+                    "Center (nm)": f"{popt[n*3+1]:.2f}", 
+                    "Abs. (Height)": f"{popt[n*3]:.4f}",
+                    "FWHM (nm)": f"{fwhm:.2f}"
+                })
             
+            st.subheader("📋 フィッティング結果要約")
             st.table(pd.DataFrame(res_list))
-        except Exception as e:
-            st.error(f"Fitting failed: {e}")
 
-    # --- レイアウト調整 (高さとインタラクティブ機能) ---
+        except Exception as e:
+            st.error(f"解析エラー: {e}")
+
+    # レイアウト設定 (軸ラベルとインタラクティブ機能)
     fig.update_layout(
         height=450,
-        margin=dict(l=10, r=10, t=30, b=10),
-        xaxis_title=data_item.get('x_unit', 'X'),
-        yaxis_title=data_item.get('y_unit', 'Y'),
-        hovermode="x unified",  # マウス位置の全データを一括表示
+        xaxis_title="Wavelength (nm)",
+        yaxis_title="Absorbance (Abs.)",
+        hovermode="x unified",
         xaxis=dict(
             range=[input_start, input_end],
-            showspikes=True, # 十字線
+            showspikes=True,
             spikemode='across',
             spikesnap='cursor',
-            spikethickness=1,
+            spikethickness=0.5,
+            spikedash='dot',
+            spikecolor='blue'
         ),
-        yaxis=dict(showspikes=True, spikesnap='cursor'),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        yaxis=dict(showspikes=True, spikesnap='cursor', spikedash='dot', spikecolor='blue'),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        template="plotly_white"
     )
 
     st.plotly_chart(fig, use_container_width=True)
-    st.info("💡 グラフ上をマウスでホバーすると座標が表示されます。ドラッグで特定範囲をズームできます。")
+    st.markdown("""
+    **💡 操作ガイド:**
+    - **マウスホバー:** 波長(nm)と吸光度(Abs.)を精密に読み取れます。
+    - **ドラッグ:** 特定の波長域を拡大（ズーム）できます。
+    - **ダブルクリック:** ズームをリセットします。
+    """)
 
 if __name__ == "__main__":
     main()
