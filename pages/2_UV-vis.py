@@ -46,7 +46,7 @@ def load_spectrum_data(uploaded_file, sep_type, skip_head, skip_foot):
 # ---------------------------------------------------------
 def main():
     st.set_page_config(page_title="UV-Vis Spectra Analyzer", layout="wide")
-    st.title("🧪 Absorption Spectra Analyzer")
+    st.title("🧪 Absorption Specta (episilon)")
 
     # --- サイドバー：1. ファイルアップロード ---
     st.sidebar.header("1. データ読み込み")
