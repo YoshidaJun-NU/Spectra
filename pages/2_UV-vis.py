@@ -47,7 +47,7 @@ def load_spectrum_data(uploaded_file):
 # ---------------------------------------------------------
 def main():
     st.set_page_config(page_title="Spectra Analyzer Pro", layout="wide")
-    st.title("🧪 Advanced Spectra Analyzer")
+    st.title("🧪UV-Vis (epsilon)")
 
     # --- サイドバー：1. ファイル読み込み ---
     st.sidebar.header("1. データの読み込み")
