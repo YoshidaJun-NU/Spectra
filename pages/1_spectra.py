@@ -66,7 +66,7 @@ def load_data(uploaded_files, separator, skip_rows, has_header):
 # ---------------------------------------------------------
 def main():
     st.set_page_config(page_title="Advanced Spectra Analyzer", layout="wide")
-    st.title("Spectra Analyzer Pro 🧪")
+    st.title("Spectra Analyzer 🧪")
 
     if 'data_list' not in st.session_state: st.session_state['data_list'] = []
 
