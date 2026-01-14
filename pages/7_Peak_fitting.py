@@ -1,41 +1,34 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 import numpy as np
 import io
-from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
 
 # ---------------------------------------------------------
-# モデル関数定義
+# 1. モデル関数
 # ---------------------------------------------------------
-def multi_gaussian(x, *params):
-    """
-    複数のガウス関数の和を計算
-    params: [amp1, cen1, sig1, amp2, cen2, sig2, ..., offset]
-    """
+def gaussian(x, amp, cen, sigma):
+    return amp * np.exp(-(x - cen)**2 / (2 * sigma**2))
+
+def lorentzian(x, amp, cen, sigma):
+    return amp * (sigma**2 / ((x - cen)**2 + sigma**2))
+
+def multi_model(x, *params, model_type="Gaussian"):
     y = np.zeros_like(x)
+    offset = params[-1]
     for i in range(0, len(params) - 1, 3):
-        amp = params[i]
-        cen = params[i+1]
-        sigma = params[i+2]
-        y += amp * np.exp(-(x - cen)**2 / (2 * sigma**2))
-    y += params[-1] # offset
-    return y
+        amp, cen, sig = params[i], params[i+1], params[i+2]
+        if model_type == "Gaussian":
+            y += gaussian(x, amp, cen, sig)
+        else:
+            y += lorentzian(x, amp, cen, sig)
+    return y + offset
 
 # ---------------------------------------------------------
-# データ読み込み・スタイル設定 (これまでの機能を継承)
+# 2. データ読み込み (JASCO形式)
 # ---------------------------------------------------------
-def init_styles(data_list):
-    if 'styles' not in st.session_state: st.session_state['styles'] = {}
-    for i, item in enumerate(data_list):
-        if item['label'] not in st.session_state['styles']:
-            st.session_state['styles'][item['label']] = {
-                'color': ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'][i % 5],
-                'linewidth': 1.5, 'linestyle': 'Solid (実線)'
-            }
-
-def load_data(uploaded_files, separator, skip_rows, has_header):
+def load_data(uploaded_files):
     data_list = []
     for f in uploaded_files:
         try:
@@ -43,128 +36,136 @@ def load_data(uploaded_files, separator, skip_rows, has_header):
             for enc in ['utf-8', 'cp932', 'shift_jis', 'latin1']:
                 try: text = content.decode(enc); break
                 except: continue
-            
-            use_sep = ',' if separator == 'comma' else '\t'
-            use_skip, use_header = skip_rows, (0 if has_header else None)
-            
-            if 'XYDATA' in text:
-                lines = text.splitlines()
-                for i, line in enumerate(lines):
-                    if 'XYDATA' in line:
-                        use_skip, use_header = i + 1, None
-                        use_sep = ',' if f.name.lower().endswith('.csv') else None
-                        break
-            
-            df = pd.read_csv(io.StringIO(text), sep=use_sep, skiprows=use_skip, header=use_header, engine='python')
+            lines = text.splitlines()
+            x_unit, y_unit = "Wavelength/Wavenumber", "Intensity"
+            use_skip = 0
+            for i, line in enumerate(lines):
+                if 'XUNITS' in line: x_unit = line.split()[-1].strip(',')
+                if 'YUNITS' in line: y_unit = line.split()[-1].strip(',')
+                if 'XYDATA' in line:
+                    use_skip = i + 1
+                    break
+            df = pd.read_csv(io.StringIO(text), sep=None, skiprows=use_skip, header=None, engine='python')
             df = df.apply(pd.to_numeric, errors='coerce').dropna()
             if df.shape[1] >= 2:
-                data_list.append({'label': f.name.rsplit('.', 1)[0], 'x': df.iloc[:, 0].values, 'y': df.iloc[:, 1].values})
-        except Exception as e: st.error(f"Error: {e}")
+                data_list.append({
+                    'label': f.name.rsplit('.', 1)[0],
+                    'x': df.iloc[:, 0].values, 'y': df.iloc[:, 1].values,
+                    'x_unit': x_unit, 'y_unit': y_unit
+                })
+        except Exception as e:
+            st.error(f"Error loading {f.name}: {e}")
     return data_list
 
 # ---------------------------------------------------------
-# メインアプリ
+# 3. メインアプリ
 # ---------------------------------------------------------
 def main():
-    st.set_page_config(page_title="Spectra Analyzer Pro", layout="wide")
-    st.title("Spectra Analyzer: Multi-Peak Fitting 🧪")
+    st.set_page_config(page_title="Spectra Solver Plotly", layout="wide")
+    st.title("Interactive Spectra Solver Pro 🧬")
 
-    if 'data_list' not in st.session_state: st.session_state['data_list'] = []
+    if 'data_list' not in st.session_state:
+        st.session_state['data_list'] = []
 
-    # --- サイドバー ---
-    st.sidebar.header("1. データ読み込み")
-    files = st.sidebar.file_uploader("ファイルをアップロード", accept_multiple_files=True, type=['txt', 'csv', 'dat'])
-    if files:
-        st.session_state['data_list'] = load_data(files, 'tab', 19, True)
-        init_styles(st.session_state['data_list'])
+    # サイドバー：1. データ
+    st.sidebar.header("1. データ管理")
+    files = st.sidebar.file_uploader("ファイルをアップロード", accept_multiple_files=True)
+    if files and st.sidebar.button("データを読み込む"):
+        st.session_state['data_list'] = load_data(files)
 
-    st.sidebar.header("2. 表示・補正設定")
+    if not st.session_state['data_list']:
+        st.info("👈 左側のサイドバーからデータを読み込んでください。")
+        return
+
+    # サイドバー：2. フィッティング設定
+    st.sidebar.header("2. フィッティング設定")
     all_labels = [d['label'] for d in st.session_state['data_list']]
-    selected = st.sidebar.multiselect("表示ファイル", all_labels, default=all_labels)
+    target = st.sidebar.selectbox("解析対象データ", all_labels)
+    data_item = next(d for d in st.session_state['data_list'] if d['label'] == target)
+    
+    func_mode = st.sidebar.radio("使用する関数", ["Gaussian", "Lorentzian"])
+    num_peaks = st.sidebar.number_input("ピーク数", 1, 5, 2)
 
-    # ベースライン補正
-    bl_mode = st.sidebar.selectbox("ベースライン補正", ["None", "Constant", "Linear"])
-    bl_params = {}
-    if bl_mode == "Constant": bl_params['v'] = st.sidebar.number_input("基準波長(nm)", 700.0)
-    if bl_mode == "Linear":
-        bl_params['p1'] = st.sidebar.number_input("点1(nm)", 650.0)
-        bl_params['p2'] = st.sidebar.number_input("点2(nm)", 750.0)
+    # 解析範囲の設定
+    st.sidebar.subheader("解析範囲")
+    x_min_data, x_max_data = float(data_item['x'].min()), float(data_item['x'].max())
+    col1, col2 = st.sidebar.columns(2)
+    input_start = col1.number_input("開始", value=x_min_data)
+    input_end = col2.number_input("終了", value=x_max_data)
+    
+    # 予想Center位置の設定
+    st.sidebar.subheader("予想Center位置")
+    manual_centers = []
+    for n in range(num_peaks):
+        default_c = input_start + (input_end - input_start) * (n+1)/(num_peaks+1)
+        c_val = st.sidebar.number_input(f"Peak {n+1} Center", value=float(default_c), key=f"c_{n}")
+        manual_centers.append(c_val)
 
-    # フィッティング設定
-    st.sidebar.header("3. マルチガウスフィッティング")
-    do_fit = st.sidebar.checkbox("フィッティングを実行")
-    num_peaks = st.sidebar.number_input("フィッティングするピーク数", 1, 10, 2)
-    fit_range = st.sidebar.slider("解析範囲(nm)", 200, 900, (300, 600))
-    fit_target = st.sidebar.selectbox("対象ファイル", selected) if selected else None
+    # --- Plotlyグラフの作成 ---
+    fig = go.Figure()
+    x, y = data_item['x'], data_item['y'].copy()
 
-    # --- グラフ描画 ---
-    if selected:
-        fig, ax = plt.subplots(figsize=(10, 6))
-        LINE_STYLES = {'Solid (実線)': '-', 'Dashed (破線)': '--', 'Dash-dot (一点鎖線)': '-.', 'Dotted (点線)': ':'}
+    # オリジナルデータ
+    fig.add_trace(go.Scatter(x=x, y=y, name="Experimental", mode='lines', line=dict(color='gray', width=1), opacity=0.5))
 
-        for item in [d for d in st.session_state['data_list'] if d['label'] in selected]:
-            x, y = item['x'], item['y'].copy()
+    if st.sidebar.checkbox("フィッティング開始"):
+        # 範囲選択（数値入力に基づきマスクを作成）
+        mask = (x >= min(input_start, input_end)) & (x <= max(input_start, input_end))
+        xf, yf = x[mask], y[mask]
 
-            # ベースライン補正
-            if bl_mode == "Constant":
-                y -= y[np.abs(x - bl_params['v']).argmin()]
-            elif bl_mode == "Linear":
-                i1, i2 = np.abs(x - bl_params['p1']).argmin(), np.abs(x - bl_params['p2']).argmin()
-                slope = (y[i2] - y[i1]) / (x[i2] - x[i1])
-                y -= (slope * (x - x[i1]) + y[i1])
+        try:
+            p0 = []
+            lower, upper = [], []
+            for c_init in manual_centers:
+                p0.extend([np.max(yf), c_init, abs(input_end-input_start)/20])
+                lower.extend([0, c_init - 50, 0.1])
+                upper.extend([np.inf, c_init + 50, 200.0])
+            p0.append(np.min(yf))
+            lower.append(-np.inf); upper.append(np.inf)
 
-            style = st.session_state['styles'][item['label']]
-            ax.plot(x, y, label=item['label'], color=style['color'], 
-                    lw=style['linewidth'], ls=LINE_STYLES[style['linestyle']], alpha=0.7)
+            popt, _ = curve_fit(
+                lambda x, *p: multi_model(x, *p, model_type=func_mode),
+                xf, yf, p0=p0, bounds=(lower, upper), maxfev=15000
+            )
 
-            # フィッティング計算
-            if do_fit and item['label'] == fit_target:
-                mask = (x >= fit_range[0]) & (x <= fit_range[1])
-                xf, yf = x[mask], y[mask]
+            # フィッティング合計曲線
+            x_fine = np.linspace(min(input_start, input_end), max(input_start, input_end), 800)
+            y_fit = multi_model(x_fine, *popt, model_type=func_mode)
+            fig.add_trace(go.Scatter(x=x_fine, y=y_fit, name="Total Fit", line=dict(color='red', width=2.5)))
 
-                if len(xf) > (num_peaks * 3):
-                    try:
-                        # 初期値推定
-                        found, _ = find_peaks(yf, prominence=0.005)
-                        # ピークが見つからない、または足りない場合は等間隔に配置
-                        initial_centers = xf[found][:num_peaks] if len(found) >= num_peaks else np.linspace(xf.min(), xf.max(), num_peaks)
-                        
-                        p0 = []
-                        for c in initial_centers:
-                            p0.extend([np.max(yf), c, (xf.max()-xf.min())/10])
-                        p0.append(np.min(yf)) # offset
+            # 個別ピーク
+            res_list = []
+            for n in range(num_peaks):
+                p_peak = list(popt[n*3:(n+1)*3]) + [popt[-1]]
+                y_p = multi_model(x_fine, *p_peak, model_type=func_mode)
+                fig.add_trace(go.Scatter(x=x_fine, y=y_p, name=f"Peak {n+1}", fill='tozeroy', opacity=0.3))
+                fwhm = 2.355*popt[n*3+2] if func_mode == "Gaussian" else 2*popt[n*3+2]
+                res_list.append({"Peak": n+1, "Center": f"{popt[n*3+1]:.2f}", "FWHM": f"{fwhm:.2f}"})
+            
+            st.table(pd.DataFrame(res_list))
+        except Exception as e:
+            st.error(f"Fitting failed: {e}")
 
-                        popt, _ = curve_fit(multi_gaussian, xf, yf, p0=p0)
-                        
-                        # フィッティング曲線描画
-                        x_fine = np.linspace(xf.min(), xf.max(), 200)
-                        ax.plot(x_fine, multi_gaussian(x_fine, *popt), 'r-', lw=2.5, label="Total Fit")
-                        
-                        # 個別ピークの描画
-                        peak_data = []
-                        for j in range(num_peaks):
-                            p_params = list(popt[j*3 : (j+1)*3]) + [popt[-1]]
-                            y_peak = multi_gaussian(x_fine, *p_params) - popt[-1] # オフセット抜き
-                            ax.plot(x_fine, y_peak + popt[-1], ':', lw=1.5, label=f"Peak {j+1}")
-                            peak_data.append({
-                                "Peak": j+1, "Center (nm)": popt[j*3+1], 
-                                "Amplitude": popt[j*3], "FWHM (nm)": 2.355 * abs(popt[j*3+2])
-                            })
-                        
-                        st.subheader(f"📊 {fit_target} のフィッティング結果")
-                        st.table(pd.DataFrame(peak_data))
+    # --- レイアウト調整 (高さとインタラクティブ機能) ---
+    fig.update_layout(
+        height=450,
+        margin=dict(l=10, r=10, t=30, b=10),
+        xaxis_title=data_item.get('x_unit', 'X'),
+        yaxis_title=data_item.get('y_unit', 'Y'),
+        hovermode="x unified",  # マウス位置の全データを一括表示
+        xaxis=dict(
+            range=[input_start, input_end],
+            showspikes=True, # 十字線
+            spikemode='across',
+            spikesnap='cursor',
+            spikethickness=1,
+        ),
+        yaxis=dict(showspikes=True, spikesnap='cursor'),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
 
-                    except Exception as e: st.warning(f"Fitting Error: {e}")
+    st.plotly_chart(fig, use_container_width=True)
+    st.info("💡 グラフ上をマウスでホバーすると座標が表示されます。ドラッグで特定範囲をズームできます。")
 
-        ax.set_xlabel("Wavelength (nm)"); ax.set_ylabel("Intensity")
-        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left'); ax.grid(True, alpha=0.3)
-        st.pyplot(fig)
-
-        # 保存
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=300)
-        st.download_button("グラフをPNGで保存", buf.getvalue(), "plot.png", "image/png")
-    else:
-        st.info("👈 ファイルをロードし、選択してください。")
-
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    main()
