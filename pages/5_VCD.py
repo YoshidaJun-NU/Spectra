@@ -5,13 +5,13 @@ import numpy as np
 import io
 import zipfile
 from matplotlib.lines import Line2D
-from scipy.signal import find_peaks # 解析用に追加
+from scipy.signal import find_peaks
 
 # ---------------------------------------------------------
-# 定数設定: 色コード
+# 定数設定: デフォルト色コード
 # ---------------------------------------------------------
-COLOR_DELTA = '#8B0000'  # 暗めの赤 (Dark Red)
-COLOR_LAMBDA = '#00008B' # 暗めの青 (Dark Blue)
+DEFAULT_COLOR_DELTA = '#8B0000'  # 暗めの赤 (Dark Red)
+DEFAULT_COLOR_LAMBDA = '#00008B' # 暗めの青 (Dark Blue)
 
 # ---------------------------------------------------------
 # 関数: ダミーデータ生成 (Delta/Lambda)
@@ -24,7 +24,6 @@ def generate_vcd_dummy(isomer_type='Delta'):
     x = np.linspace(800, 3000, 500)
     
     # ピーク定義 (中心波数, 幅, IR高さ, VCD符号基準)
-    # VCD符号基準: Delta体を基準に定義し、Lambda体は反転させる
     peaks = [
         (1750, 20, 0.8, +1.0), # C=O stretch
         (1650, 25, 0.3, -0.4), # Amide I like
@@ -40,11 +39,10 @@ def generate_vcd_dummy(isomer_type='Delta'):
     noise = np.random.normal(0, 0.003, len(x))
     
     for center, width, h_ir, sign_vcd in peaks:
-        # IRは常に正（共通）
+        # IRは常に正
         y_ir += h_ir * (width**2 / ((x - center)**2 + width**2))
         
-        # VCD符号の決定
-        # Deltaならそのまま、Lambdaなら反転
+        # VCD符号の決定 (Lambdaなら反転)
         actual_sign = sign_vcd if isomer_type == 'Delta' else -sign_vcd
         
         # VCD強度はIRの10%程度と仮定
@@ -132,7 +130,7 @@ def create_gnuplot_package(delta_list, lambda_list, x_lim, vcd_lim, ir_lim):
     current_col = 2
     
     for item in col_names:
-        color = COLOR_DELTA if item['type'] == 'Delta' else COLOR_LAMBDA
+        color = DEFAULT_COLOR_DELTA if item['type'] == 'Delta' else DEFAULT_COLOR_LAMBDA
         title = item['label'].replace('_', '\\_')
         
         # IR: current_col, VCD: current_col+1
@@ -219,7 +217,7 @@ def main():
     skip_row = st.sidebar.number_input("スキップ行数", 0, value=0)
 
     # Sample 1 (Delta) Upload
-    up_delta = st.sidebar.file_uploader("Sample 1 (Delta体) - 暗赤色", accept_multiple_files=True, key="up_d")
+    up_delta = st.sidebar.file_uploader("Sample 1 (Delta体) - Default:赤", accept_multiple_files=True, key="up_d")
     if up_delta:
         d_list = []
         for f in up_delta:
@@ -228,7 +226,7 @@ def main():
         st.session_state['delta_data'] = d_list
 
     # Sample 2 (Lambda) Upload
-    up_lambda = st.sidebar.file_uploader("Sample 2 (Lambda体) - 暗青色", accept_multiple_files=True, key="up_l")
+    up_lambda = st.sidebar.file_uploader("Sample 2 (Lambda体) - Default:青", accept_multiple_files=True, key="up_l")
     if up_lambda:
         l_list = []
         for f in up_lambda:
@@ -258,9 +256,9 @@ def main():
         # 1-1. 解析対象の選択
         all_options = []
         for i, d in enumerate(delta_data):
-            all_options.append({'label': f"[Delta] {d['filename']}", 'data': d, 'color': COLOR_DELTA})
+            all_options.append({'label': f"[Delta] {d['filename']}", 'data': d, 'color': DEFAULT_COLOR_DELTA})
         for i, d in enumerate(lambda_data):
-            all_options.append({'label': f"[Lambda] {d['filename']}", 'data': d, 'color': COLOR_LAMBDA})
+            all_options.append({'label': f"[Lambda] {d['filename']}", 'data': d, 'color': DEFAULT_COLOR_LAMBDA})
             
         col_sel, col_peak = st.columns([1, 2])
         with col_sel:
@@ -341,13 +339,13 @@ def main():
                     st.dataframe(df_peaks.style.format("{:.4f}"))
 
     # ==========================================
-    # Tab 2: 重ね書き (Comparison)
+    # Tab 2: 重ね書き (Comparison) - 機能追加
     # ==========================================
     with tab2:
         st.subheader("Multi-Spectra Comparison")
         
-        # 2-1. 軸設定 (Tab2専用)
-        with st.expander("グラフ設定 (軸範囲・表示)", expanded=True):
+        # 2-1. 軸設定
+        with st.expander("軸範囲の設定 (Tab2)", expanded=False):
             col_x1, col_x2 = st.columns(2)
             t2_x_high = col_x1.number_input("X High (Left)", value=3000.0, key="t2_xh")
             t2_x_low = col_x2.number_input("X Low (Right)", value=800.0, key="t2_xl")
@@ -363,7 +361,33 @@ def main():
                 t2_ir_max = c1.number_input("IR Max", value=1.0, key="t2_imax")
                 t2_ir_min = c2.number_input("IR Min", value=0.0, key="t2_imin")
 
-        # 2-2. プロット作成 (既存ロジック)
+        # 2-2. グラフスタイル設定 (New!)
+        with st.expander("グラフスタイル設定 (色・太さ・フォント・凡例)", expanded=True):
+            # 共通設定
+            c_font, c_leg = st.columns(2)
+            font_size = c_font.number_input("文字サイズ (Font Size)", 8, 24, 12, key="t2_fontsize")
+            show_legend = c_leg.checkbox("凡例を表示する (Show Legend)", value=True, key="t2_legend")
+            
+            st.divider()
+            
+            # Delta Style
+            st.markdown("**Sample 1 (Delta体) のスタイル**")
+            c_d1, c_d2 = st.columns(2)
+            color_delta_cust = c_d1.color_picker("線の色", DEFAULT_COLOR_DELTA, key="c_delta")
+            width_delta_cust = c_d2.number_input("線の太さ", 0.5, 5.0, 1.5, step=0.1, key="w_delta")
+            
+            st.divider()
+            
+            # Lambda Style
+            st.markdown("**Sample 2 (Lambda体) のスタイル**")
+            c_l1, c_l2 = st.columns(2)
+            color_lambda_cust = c_l1.color_picker("線の色", DEFAULT_COLOR_LAMBDA, key="c_lambda")
+            width_lambda_cust = c_l2.number_input("線の太さ", 0.5, 5.0, 1.5, step=0.1, key="w_lambda")
+
+        # 2-3. プロット作成
+        # 文字サイズの適用
+        plt.rcParams.update({'font.size': font_size})
+        
         fig2, (ax2_vcd, ax2_ir) = plt.subplots(2, 1, sharex=True, figsize=(8, 9), 
                                             gridspec_kw={'height_ratios': [1, 1]})
         plt.subplots_adjust(hspace=0.05)
@@ -372,25 +396,25 @@ def main():
         ax2_vcd.axhline(0, color='black', linewidth=0.8, linestyle='-')
         
         for item in delta_data:
-            ax2_vcd.plot(item['x'], item['vcd'], color=COLOR_DELTA, linewidth=1.5, label=f"Delta: {item['filename']}")
+            ax2_vcd.plot(item['x'], item['vcd'], color=color_delta_cust, linewidth=width_delta_cust)
         for item in lambda_data:
-            ax2_vcd.plot(item['x'], item['vcd'], color=COLOR_LAMBDA, linewidth=1.5, label=f"Lambda: {item['filename']}")
+            ax2_vcd.plot(item['x'], item['vcd'], color=color_lambda_cust, linewidth=width_lambda_cust)
             
-        ax2_vcd.set_ylabel("VCD Intensity", fontsize=12)
-        ax2_vcd.tick_params(direction='in', top=True, right=True)
+        ax2_vcd.set_ylabel("VCD Intensity", fontsize=font_size)
+        ax2_vcd.tick_params(direction='in', top=True, right=True, labelsize=font_size)
         
         if man_t2:
             ax2_vcd.set_ylim(t2_vcd_min, t2_vcd_max)
 
         # IRプロット (下段)
         for item in delta_data:
-            ax2_ir.plot(item['x'], item['ir'], color=COLOR_DELTA, linewidth=1.5)
+            ax2_ir.plot(item['x'], item['ir'], color=color_delta_cust, linewidth=width_delta_cust)
         for item in lambda_data:
-            ax2_ir.plot(item['x'], item['ir'], color=COLOR_LAMBDA, linewidth=1.5)
+            ax2_ir.plot(item['x'], item['ir'], color=color_lambda_cust, linewidth=width_lambda_cust)
 
-        ax2_ir.set_ylabel("Absorbance", fontsize=12)
-        ax2_ir.set_xlabel("Wavenumber ($cm^{-1}$)", fontsize=12)
-        ax2_ir.tick_params(direction='in', top=True, right=True)
+        ax2_ir.set_ylabel("Absorbance", fontsize=font_size)
+        ax2_ir.set_xlabel("Wavenumber ($cm^{-1}$)", fontsize=font_size)
+        ax2_ir.tick_params(direction='in', top=True, right=True, labelsize=font_size)
         
         # 軸反転設定
         ax2_ir.set_xlim(t2_x_high, t2_x_low)
@@ -399,15 +423,16 @@ def main():
             ax2_ir.set_ylim(t2_ir_min, t2_ir_max)
 
         # 凡例 (カスタム凡例)
-        legend_elements = [
-            Line2D([0], [0], color=COLOR_DELTA, lw=2, label='Delta Group'),
-            Line2D([0], [0], color=COLOR_LAMBDA, lw=2, label='Lambda Group')
-        ]
-        ax2_vcd.legend(handles=legend_elements, loc='best')
+        if show_legend:
+            legend_elements = [
+                Line2D([0], [0], color=color_delta_cust, lw=width_delta_cust, label='Sample 1 (Delta)'),
+                Line2D([0], [0], color=color_lambda_cust, lw=width_lambda_cust, label='Sample 2 (Lambda)')
+            ]
+            ax2_vcd.legend(handles=legend_elements, loc='best', fontsize=font_size)
 
         st.pyplot(fig2)
 
-        # 2-3. ダウンロード
+        # 2-4. ダウンロード
         st.markdown("---")
         c1, c2 = st.columns(2)
         
