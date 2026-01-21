@@ -4,7 +4,7 @@ import numpy as np
 import io
 from scipy.signal import find_peaks
 import plotly.graph_objects as go
-import plotly.express as px # 色のデフォルト値取得用
+import plotly.express as px
 
 # ==========================================
 # 0. デモデータ (軽量化版)
@@ -874,6 +874,25 @@ def main():
             do_peak_search = st.checkbox("ピーク検出を有効にする", value=True)
             prominence = st.number_input("感度 (Prominence)", value=1.0, step=0.1)
             distance = st.number_input("最小間隔 (Distance)", value=10, min_value=1)
+            
+            # --- Tab1 軸範囲設定 (マニュアル) ---
+            st.divider()
+            with st.expander("軸範囲設定 (マニュアル)"):
+                manual_axis = st.checkbox("マニュアル設定を有効にする", value=False, key="t1_manual")
+                
+                # デフォルト値計算
+                def_x_min, def_x_max = 400.0, 4000.0
+                def_y_min, def_y_max = 0.0, 100.0
+                if target_data:
+                    def_x_min, def_x_max = float(min(target_data['x'])), float(max(target_data['x']))
+                    if y_mode == "Absorbance": def_y_min, def_y_max = 0.0, 2.0
+                    else: def_y_min, def_y_max = 0.0, 105.0
+
+                c1, c2 = st.columns(2)
+                t1_x_min = c1.number_input("X Min", value=def_x_min, key="t1_xmin")
+                t1_x_max = c2.number_input("X Max", value=def_x_max, key="t1_xmax")
+                t1_y_min = c1.number_input("Y Min", value=def_y_min, key="t1_ymin")
+                t1_y_max = c2.number_input("Y Max", value=def_y_max, key="t1_ymax")
 
         if target_data:
             x = target_data['x']
@@ -900,10 +919,24 @@ def main():
                     hovertemplate='Wavenumber: %{x:.1f}<br>Value: %{y:.2f}'
                 ))
 
-            fig.update_layout(
-                title=f"{target_label} ({y_mode})", xaxis_title="Wavenumber (cm⁻¹)", yaxis_title=y_mode,
-                xaxis=dict(autorange="reversed"), hovermode="closest", height=600, template="simple_white"
+            # レイアウト設定 (マニュアル軸範囲反映)
+            layout_dict = dict(
+                title=f"{target_label} ({y_mode})", 
+                xaxis_title="Wavenumber (cm⁻¹)", 
+                yaxis_title=y_mode,
+                hovermode="closest", 
+                height=600, 
+                template="simple_white"
             )
+            
+            if manual_axis:
+                # IRらしく高波数(左) -> 低波数(右) にするために [Max, Min] を指定
+                layout_dict['xaxis'] = dict(range=[t1_x_max, t1_x_min])
+                layout_dict['yaxis'] = dict(range=[t1_y_min, t1_y_max])
+            else:
+                layout_dict['xaxis'] = dict(autorange="reversed")
+
+            fig.update_layout(**layout_dict)
 
             with col_plot:
                 st.plotly_chart(fig, use_container_width=True)
@@ -917,7 +950,7 @@ def main():
     # =========================================================
     with tab2:
         st.header("Multi-Spectra Comparison")
-        col_c2, col_p2 = st.columns([1.2, 3]) # コントロールエリアを少し広めに
+        col_c2, col_p2 = st.columns([1.2, 3]) 
         
         # --- 重ね書き設定エリア ---
         with col_c2:
@@ -940,7 +973,28 @@ def main():
                 show_grid = st.checkbox("グリッド線を表示", value=True)
                 grid_width = st.number_input("グリッド線の太さ", value=1, min_value=1, max_value=5)
 
-            # 2. 個別スタイル設定
+            # 2. 軸範囲設定 (マニュアル)
+            with st.expander("軸範囲設定 (マニュアル)"):
+                manual_axis_c = st.checkbox("マニュアル設定を有効にする", value=False, key="t2_manual")
+                
+                # デフォルト値
+                def_cx_min, def_cx_max = 400.0, 4000.0
+                def_cy_min, def_cy_max = 0.0, 100.0
+                
+                if selected_labels and st.session_state['data_list']:
+                    # 選択されたデータの全範囲を取得してデフォルトに
+                    # (簡易的に最初のデータを使う)
+                    first_d = next((d for d in st.session_state['data_list'] if d['label'] == selected_labels[0]), None)
+                    if first_d:
+                        def_cx_min, def_cx_max = float(min(first_d['x'])), float(max(first_d['x']))
+
+                c1, c2 = st.columns(2)
+                t2_x_min = c1.number_input("X Min", value=def_cx_min, key="t2_xmin")
+                t2_x_max = c2.number_input("X Max", value=def_cx_max, key="t2_xmax")
+                t2_y_min = c1.number_input("Y Min", value=def_cy_min, key="t2_ymin")
+                t2_y_max = c2.number_input("Y Max", value=def_cy_max, key="t2_ymax")
+
+            # 3. 個別スタイル設定
             style_settings = {}
             if selected_labels:
                 with st.expander("個別ライン設定 (色・太さ)"):
@@ -948,13 +1002,9 @@ def main():
                     for idx, label in enumerate(selected_labels):
                         st.markdown(f"**{label}**")
                         c1, c2 = st.columns(2)
-                        
-                        # 色のデフォルト値を循環させる
                         def_color = default_colors[idx % len(default_colors)]
-                        
                         color = c1.color_picker(f"色", value=def_color, key=f"clr_{label}")
                         width = c2.number_input(f"太さ", value=1.5, step=0.5, key=f"wd_{label}")
-                        
                         style_settings[label] = {'color': color, 'width': width}
                         st.write("---")
 
@@ -972,7 +1022,6 @@ def main():
                     x_c = item['x']
                     raw_y_c = item['y']
                     
-                    # 縦軸変換
                     if y_mode_comp == "Absorbance":
                         if np.max(raw_y_c) > 20: 
                             y_c = trans_to_abs(raw_y_c)
@@ -981,11 +1030,9 @@ def main():
                     else:
                         y_c = raw_y_c
                     
-                    # オフセット適用
                     current_offset = i * offset_step
                     y_plotted = y_c + current_offset
                     
-                    # スタイル取得
                     style = style_settings.get(label, {'color': 'blue', 'width': 1.5})
 
                     fig_comp.add_trace(go.Scatter(
@@ -997,12 +1044,11 @@ def main():
                     ))
 
                 # レイアウト詳細設定
-                fig_comp.update_layout(
+                layout_dict_c = dict(
                     title=f"Comparison ({y_mode_comp})",
                     xaxis_title="Wavenumber (cm⁻¹)",
                     yaxis_title=f"{y_mode_comp} (Offset applied)",
                     xaxis=dict(
-                        autorange="reversed",
                         showgrid=show_grid,
                         gridwidth=grid_width
                     ),
@@ -1016,6 +1062,16 @@ def main():
                     height=700,
                     template="simple_white"
                 )
+
+                if manual_axis_c:
+                    # マニュアル設定時 (反転のために [Max, Min] を指定)
+                    # ただしxaxisの辞書が既にあるのでupdateする
+                    layout_dict_c['xaxis'].update(range=[t2_x_max, t2_x_min])
+                    layout_dict_c['yaxis'].update(range=[t2_y_min, t2_y_max])
+                else:
+                    layout_dict_c['xaxis'].update(autorange="reversed")
+
+                fig_comp.update_layout(**layout_dict_c)
                 
                 st.plotly_chart(fig_comp, use_container_width=True)
             else:
