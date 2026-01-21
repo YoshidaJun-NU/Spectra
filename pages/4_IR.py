@@ -4,11 +4,11 @@ import numpy as np
 import io
 from scipy.signal import find_peaks
 import plotly.graph_objects as go
+import plotly.express as px # 色のデフォルト値取得用
 
 # ==========================================
 # 0. デモデータ (軽量化版)
 # ==========================================
-# 実際のファイルからデータ点を間引いて作成しています
 DEMO_DATA_STR = """TITLE	
 DATA TYPE	INFRARED SPECTRUM
 ORIGIN	JASCO
@@ -857,8 +857,6 @@ def main():
     # --- タブ構成 ---
     tab1, tab2 = st.tabs(["📊 データ解析 (Analysis)", "📈 重ね書き (Comparison)"])
 
-    # ... (以下、前回と同じロジック) ...
-    
     # =========================================================
     # タブ1: 個別解析モード
     # =========================================================
@@ -882,7 +880,6 @@ def main():
             raw_y = target_data['y']
             
             if y_mode == "Absorbance":
-                # 簡易判定: 最大値>20なら%Tとみなして変換
                 if np.max(raw_y) > 20: 
                     y = trans_to_abs(raw_y)
                 else:
@@ -920,27 +917,62 @@ def main():
     # =========================================================
     with tab2:
         st.header("Multi-Spectra Comparison")
-        col_c2, col_p2 = st.columns([1, 3])
+        col_c2, col_p2 = st.columns([1.2, 3]) # コントロールエリアを少し広めに
         
+        # --- 重ね書き設定エリア ---
         with col_c2:
-            st.subheader("重ね書き設定")
+            st.subheader("データ選択・計算設定")
             selected_labels = st.multiselect("表示するデータ", all_labels, default=all_labels)
             y_mode_comp = st.radio("縦軸モード", ["Transmittance (%)", "Absorbance"], key="t2_mode")
-            st.divider()
-            st.markdown("**オフセット設定**")
             offset_step = st.number_input("一括オフセット間隔", value=0.0, step=0.1)
             reverse_stack = st.checkbox("積み上げ順を逆にする", value=False)
+            
+            st.divider()
+            
+            st.subheader("グラフ表示設定")
+            
+            # 1. 共通設定
+            with st.expander("共通設定 (文字・軸・凡例)", expanded=True):
+                font_size = st.number_input("文字サイズ", value=14, step=1, min_value=8, max_value=30)
+                show_legend = st.checkbox("凡例を表示", value=True)
+                
+                st.write("**グリッド線(目盛線)**")
+                show_grid = st.checkbox("グリッド線を表示", value=True)
+                grid_width = st.number_input("グリッド線の太さ", value=1, min_value=1, max_value=5)
 
+            # 2. 個別スタイル設定
+            style_settings = {}
+            if selected_labels:
+                with st.expander("個別ライン設定 (色・太さ)"):
+                    default_colors = px.colors.qualitative.Plotly
+                    for idx, label in enumerate(selected_labels):
+                        st.markdown(f"**{label}**")
+                        c1, c2 = st.columns(2)
+                        
+                        # 色のデフォルト値を循環させる
+                        def_color = default_colors[idx % len(default_colors)]
+                        
+                        color = c1.color_picker(f"色", value=def_color, key=f"clr_{label}")
+                        width = c2.number_input(f"太さ", value=1.5, step=0.5, key=f"wd_{label}")
+                        
+                        style_settings[label] = {'color': color, 'width': width}
+                        st.write("---")
+
+        # --- プロットエリア ---
         with col_p2:
             if selected_labels:
                 fig_comp = go.Figure()
                 plot_data_list = [d for d in st.session_state['data_list'] if d['label'] in selected_labels]
-                if reverse_stack: plot_data_list = plot_data_list[::-1]
+                
+                if reverse_stack: 
+                    plot_data_list = plot_data_list[::-1]
 
                 for i, item in enumerate(plot_data_list):
+                    label = item['label']
                     x_c = item['x']
                     raw_y_c = item['y']
                     
+                    # 縦軸変換
                     if y_mode_comp == "Absorbance":
                         if np.max(raw_y_c) > 20: 
                             y_c = trans_to_abs(raw_y_c)
@@ -949,20 +981,42 @@ def main():
                     else:
                         y_c = raw_y_c
                     
+                    # オフセット適用
                     current_offset = i * offset_step
                     y_plotted = y_c + current_offset
                     
+                    # スタイル取得
+                    style = style_settings.get(label, {'color': 'blue', 'width': 1.5})
+
                     fig_comp.add_trace(go.Scatter(
-                        x=x_c, y=y_plotted, mode='lines',
-                        name=f"{item['label']} (+{current_offset:.1f})",
-                        hovertemplate=f"<b>{item['label']}</b><br>X: %{{x:.1f}}<br>Y: %{{y:.2f}}<extra></extra>"
+                        x=x_c, y=y_plotted,
+                        mode='lines',
+                        name=f"{label}",
+                        line=dict(color=style['color'], width=style['width']),
+                        hovertemplate=f"<b>{label}</b><br>X: %{{x:.1f}}<br>Y: %{{y:.2f}}<extra></extra>"
                     ))
 
+                # レイアウト詳細設定
                 fig_comp.update_layout(
-                    title=f"Comparison ({y_mode_comp})", xaxis_title="Wavenumber (cm⁻¹)",
-                    yaxis_title=f"{y_mode_comp} (Offset applied)", xaxis=dict(autorange="reversed"),
-                    hovermode="x unified", height=700, template="simple_white"
+                    title=f"Comparison ({y_mode_comp})",
+                    xaxis_title="Wavenumber (cm⁻¹)",
+                    yaxis_title=f"{y_mode_comp} (Offset applied)",
+                    xaxis=dict(
+                        autorange="reversed",
+                        showgrid=show_grid,
+                        gridwidth=grid_width
+                    ),
+                    yaxis=dict(
+                        showgrid=show_grid,
+                        gridwidth=grid_width
+                    ),
+                    font=dict(size=font_size),
+                    showlegend=show_legend,
+                    hovermode="x unified",
+                    height=700,
+                    template="simple_white"
                 )
+                
                 st.plotly_chart(fig_comp, use_container_width=True)
             else:
                 st.warning("表示するデータを選択してください。")

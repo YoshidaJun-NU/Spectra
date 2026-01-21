@@ -1,0 +1,7 @@
+[theme]
+base = "light"
+primaryColor = "#F63366"  # プライマリカラー（アクセント色）
+backgroundColor = "#FFFFFF" # 背景色
+secondaryBackgroundColor = "#F0F2F6" # サイドバーなどの背景色
+textColor = "#262730" # テキストの色
+font = "sans serif" # フォント ("sans serif", "serif", "monospace")
