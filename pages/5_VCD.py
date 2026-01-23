@@ -6,6 +6,8 @@ import io
 import zipfile
 from matplotlib.lines import Line2D
 from scipy.signal import find_peaks
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # ---------------------------------------------------------
 # 定数設定: デフォルト色コード
@@ -56,7 +58,8 @@ def generate_vcd_dummy(isomer_type='Delta'):
 # ---------------------------------------------------------
 def load_vcd_data(uploaded_file, sep_char, skip_rows):
     try:
-        df = pd.read_csv(uploaded_file, sep=sep_char, skiprows=skip_rows, header=None)
+        content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+        df = pd.read_csv(io.StringIO(content), sep=sep_char, skiprows=skip_rows, header=None)
         df = df.apply(pd.to_numeric, errors='coerce').dropna()
         
         if df.shape[1] < 3:
@@ -205,13 +208,14 @@ def main():
     # ==========================================
     # タブ構成
     # ==========================================
-    tab1, tab2 = st.tabs(["📊 個別解析 (Analysis)", "📈 重ね書き (Comparison)"])
+    tab1, tab2 = st.tabs(["📊 個別解析 (Interactive / Plotly)", "📈 重ね書き (Comparison / Matplotlib)"])
 
     # ==========================================
-    # Tab 1: 個別解析 (Single Spectrum)
+    # Tab 1: 個別解析 (Interactive / Plotly)
     # ==========================================
     with tab1:
-        st.subheader("Single Spectrum Analysis")
+        st.subheader("Single Spectrum Analysis (Interactive)")
+        st.caption("マウスカーソルを合わせると値を表示します。ドラッグでズームできます。")
         
         # 1-1. 解析対象の選択リスト作成
         all_options = []
@@ -223,7 +227,6 @@ def main():
         col_sel, col_peak = st.columns([1, 2])
         
         with col_sel:
-            # 修正ポイント: 直接オブジェクトを渡さず、インデックスを使用する
             option_indices = range(len(all_options))
             selected_idx = st.selectbox(
                 "解析するデータを選択", 
@@ -232,11 +235,11 @@ def main():
             )
             selected_item = all_options[selected_idx]
             
-            with st.expander("軸範囲の設定 (Tab1)", expanded=False):
+            with st.expander("軸範囲の手動設定", expanded=False):
+                man_t1 = st.checkbox("範囲を指定する", key="t1_man_range")
                 t1_x_high = st.number_input("X High (Left)", value=3000.0, key="t1_xh")
                 t1_x_low = st.number_input("X Low (Right)", value=800.0, key="t1_xl")
                 
-                man_t1 = st.checkbox("Y軸範囲を指定", key="t1_man_y")
                 t1_vcd_min, t1_vcd_max = None, None
                 t1_ir_min, t1_ir_max = None, None
                 
@@ -248,51 +251,85 @@ def main():
                     t1_ir_min = c2.number_input("IR Min", value=0.0, key="t1_imin")
 
         with col_peak:
-            st.markdown("**IRピーク検出設定**")
-            do_peak = st.checkbox("IRのピーク位置をVCDに表示する", value=True)
+            st.markdown("**ピーク検出設定**")
+            do_peak = st.checkbox("IRのピークを検出し、マーカーを表示する", value=True)
             peak_th = st.slider("ピークしきい値 (IR Abs)", 0.0, 1.0, 0.1, 0.05)
             
-        # 1-2. プロット作成
+        # 1-2. Plotly プロット作成
         if selected_item:
             data = selected_item['data']
             x, ir, vcd = data['x'], data['ir'], data['vcd']
             color = selected_item['color']
             
+            # ピーク検出
             peaks, _ = find_peaks(ir, height=peak_th, distance=20)
             peak_x = x[peaks]
             peak_ir = ir[peaks]
             peak_vcd = vcd[peaks]
 
-            fig1, (ax1_vcd, ax1_ir) = plt.subplots(2, 1, sharex=True, figsize=(8, 8), 
-                                                gridspec_kw={'height_ratios': [1, 1]})
-            plt.subplots_adjust(hspace=0.05)
-            
-            ax1_vcd.axhline(0, color='black', lw=0.8)
-            ax1_vcd.plot(x, vcd, color=color, lw=1.5, label="VCD")
-            if do_peak:
-                for px, py in zip(peak_x, peak_vcd):
-                    ax1_vcd.axvline(x=px, color='gray', linestyle=':', alpha=0.6)
-                    ax1_vcd.plot(px, py, 'x', color='black', markersize=6)
+            # Plotly Figure 作成 (2段)
+            fig_p = make_subplots(
+                rows=2, cols=1, 
+                shared_xaxes=True, 
+                vertical_spacing=0.05,
+                subplot_titles=(f"VCD: {data['filename']}", "IR Spectrum"),
+                row_heights=[0.5, 0.5]
+            )
 
-            ax1_vcd.set_ylabel("VCD Intensity")
-            ax1_vcd.set_title(f"Analysis: {data['filename']}")
-            if man_t1: ax1_vcd.set_ylim(t1_vcd_min, t1_vcd_max)
+            # VCD Trace
+            fig_p.add_trace(go.Scatter(
+                x=x, y=vcd, mode='lines', name='VCD',
+                line=dict(color=color, width=2),
+                hovertemplate="Wave: %{x:.1f}<br>VCD: %{y:.6f}<extra></extra>"
+            ), row=1, col=1)
 
-            ax1_ir.plot(x, ir, color=color, lw=1.5, label="IR")
-            if do_peak:
-                ax1_ir.plot(peak_x, peak_ir, 'o', color='red', markersize=5, alpha=0.7)
-                for px in peak_x:
-                     ax1_ir.axvline(x=px, color='gray', linestyle=':', alpha=0.6)
-
-            ax1_ir.set_ylabel("Absorbance")
-            ax1_ir.set_xlabel("Wavenumber ($cm^{-1}$)")
-            ax1_ir.set_xlim(t1_x_high, t1_x_low)
-            if man_t1: ax1_ir.set_ylim(t1_ir_min, t1_ir_max)
-
-            st.pyplot(fig1)
-
+            # VCD Peak Markers
             if do_peak and len(peak_x) > 0:
-                with st.expander("検出されたピークリスト"):
+                fig_p.add_trace(go.Scatter(
+                    x=peak_x, y=peak_vcd, mode='markers', name='Peaks (VCD)',
+                    marker=dict(symbol='x', size=8, color='black'),
+                    hovertemplate="Peak Wave: %{x:.1f}<br>VCD: %{y:.6f}<extra></extra>"
+                ), row=1, col=1)
+
+            # IR Trace
+            fig_p.add_trace(go.Scatter(
+                x=x, y=ir, mode='lines', name='IR',
+                line=dict(color=color, width=2),
+                hovertemplate="Wave: %{x:.1f}<br>Abs: %{y:.4f}<extra></extra>"
+            ), row=2, col=1)
+            
+            # IR Peak Markers
+            if do_peak and len(peak_x) > 0:
+                fig_p.add_trace(go.Scatter(
+                    x=peak_x, y=peak_ir, mode='markers', name='Peaks (IR)',
+                    marker=dict(symbol='circle', size=8, color='red', opacity=0.7),
+                    hovertemplate="Peak Wave: %{x:.1f}<br>Abs: %{y:.4f}<extra></extra>"
+                ), row=2, col=1)
+
+            # レイアウト調整
+            fig_p.update_layout(
+                height=700, 
+                showlegend=True,
+                hovermode="x unified",
+                xaxis2=dict(title="Wavenumber (cm⁻¹)", range=[t1_x_high, t1_x_low]) # X軸反転（大きい方が左）
+            )
+            
+            # 軸同期のためX軸範囲設定 (Range指定があれば)
+            if man_t1:
+                fig_p.update_yaxes(range=[t1_vcd_min, t1_vcd_max], row=1, col=1)
+                fig_p.update_yaxes(range=[t1_ir_min, t1_ir_max], row=2, col=1)
+            else:
+                # 自動でもX軸の向きだけは合わせる
+                fig_p.update_xaxes(range=[t1_x_high, t1_x_low], row=1, col=1)
+                fig_p.update_xaxes(range=[t1_x_high, t1_x_low], row=2, col=1)
+                
+            fig_p.add_hline(y=0, line_width=1, line_color="black", row=1, col=1)
+
+            st.plotly_chart(fig_p, use_container_width=True)
+
+            # ピークリストテーブル
+            if do_peak and len(peak_x) > 0:
+                with st.expander("📊 検出されたピーク詳細リスト"):
                     df_peaks = pd.DataFrame({
                         "Wavenumber": peak_x,
                         "IR Abs": peak_ir,
@@ -306,74 +343,168 @@ def main():
     with tab2:
         st.subheader("Multi-Spectra Comparison")
         
-        with st.expander("軸範囲の設定 (Tab2)", expanded=False):
-            col_x1, col_x2 = st.columns(2)
-            t2_x_high = col_x1.number_input("X High (Left)", value=3000.0, key="t2_xh")
-            t2_x_low = col_x2.number_input("X Low (Right)", value=800.0, key="t2_xl")
+        # ------------------------------------
+        # スケーリング設定UI
+        # ------------------------------------
+        with st.expander("🔢 各データのスケーリング設定 (倍率変更)", expanded=False):
+            st.info("各データの縦軸値を指定した倍率で掛け合わせます (X倍)。VCDが小さい場合に有効です。")
+            scale_cols = st.columns(2)
             
-            man_t2 = st.checkbox("Y軸範囲を指定", key="t2_man_y")
-            t2_vcd_min, t2_vcd_max = None, None
-            t2_ir_min, t2_ir_max = None, None
-            if man_t2:
-                c1, c2 = st.columns(2)
-                t2_vcd_max = c1.number_input("VCD Max", value=0.1, key="t2_vmax")
-                t2_vcd_min = c2.number_input("VCD Min", value=-0.1, key="t2_vmin")
-                t2_ir_max = c1.number_input("IR Max", value=1.0, key="t2_imax")
-                t2_ir_min = c2.number_input("IR Min", value=0.0, key="t2_imin")
+            # スケール値を保持する辞書
+            scale_factors = {}
+            
+            with scale_cols[0]:
+                st.markdown("**Sample 1 (Delta)**")
+                for item in delta_data:
+                    fname = item['filename']
+                    # VCDとIR両方にかけるか、VCDのみかを選択できるようにするのも手だが、
+                    # ここではシンプルに「VCD倍率」とする（IRは通常そこまで変えないため）
+                    val = st.number_input(f"{fname} (x倍)", value=1.0, step=0.5, key=f"scale_{fname}")
+                    scale_factors[fname] = val
+            
+            with scale_cols[1]:
+                st.markdown("**Sample 2 (Lambda)**")
+                for item in lambda_data:
+                    fname = item['filename']
+                    val = st.number_input(f"{fname} (x倍)", value=1.0, step=0.5, key=f"scale_{fname}")
+                    scale_factors[fname] = val
 
-        with st.expander("グラフスタイル設定 (色・太さ・フォント・凡例)", expanded=True):
-            c_font, c_leg = st.columns(2)
-            font_size = c_font.number_input("文字サイズ (Font Size)", 8, 24, 12, key="t2_fontsize")
-            show_legend = c_leg.checkbox("凡例を表示する (Show Legend)", value=True, key="t2_legend")
-            st.divider()
-            
-            st.markdown("**Sample 1 (Delta体) のスタイル**")
-            c_d1, c_d2 = st.columns(2)
-            color_delta_cust = c_d1.color_picker("線の色", DEFAULT_COLOR_DELTA, key="c_delta")
-            width_delta_cust = c_d2.number_input("線の太さ", 0.5, 5.0, 1.5, step=0.1, key="w_delta")
-            
-            st.divider()
-            st.markdown("**Sample 2 (Lambda体) のスタイル**")
-            c_l1, c_l2 = st.columns(2)
-            color_lambda_cust = c_l1.color_picker("線の色", DEFAULT_COLOR_LAMBDA, key="c_lambda")
-            width_lambda_cust = c_l2.number_input("線の太さ", 0.5, 5.0, 1.5, step=0.1, key="w_lambda")
+        # ------------------------------------
+        # 軸範囲・グラフスタイル設定
+        # ------------------------------------
+        col_ctrl1, col_ctrl2 = st.columns(2)
+        with col_ctrl1:
+            with st.expander("軸範囲の設定", expanded=False):
+                c_x1, c_x2 = st.columns(2)
+                t2_x_high = c_x1.number_input("X High (Left)", value=3000.0, key="t2_xh")
+                t2_x_low = c_x2.number_input("X Low (Right)", value=800.0, key="t2_xl")
+                
+                man_t2 = st.checkbox("Y軸範囲を指定", key="t2_man_y")
+                t2_vcd_min, t2_vcd_max = None, None
+                t2_ir_min, t2_ir_max = None, None
+                if man_t2:
+                    c1, c2 = st.columns(2)
+                    t2_vcd_max = c1.number_input("VCD Max", value=0.1, key="t2_vmax")
+                    t2_vcd_min = c2.number_input("VCD Min", value=-0.1, key="t2_vmin")
+                    t2_ir_max = c1.number_input("IR Max", value=1.0, key="t2_imax")
+                    t2_ir_min = c2.number_input("IR Min", value=0.0, key="t2_imin")
 
-        # Plot
+        with col_ctrl2:
+            with st.expander("グラフスタイル設定", expanded=False):
+                c_font, c_leg = st.columns(2)
+                font_size = c_font.number_input("文字サイズ", 8, 24, 12, key="t2_fontsize")
+                show_legend = c_leg.checkbox("凡例を表示", value=True, key="t2_legend")
+                
+                c_d1, c_d2 = st.columns(2)
+                color_delta_cust = c_d1.color_picker("Delta 色", DEFAULT_COLOR_DELTA, key="c_delta")
+                width_delta_cust = c_d2.number_input("Delta 太さ", 0.5, 5.0, 1.5, step=0.1, key="w_delta")
+                
+                c_l1, c_l2 = st.columns(2)
+                color_lambda_cust = c_l1.color_picker("Lambda 色", DEFAULT_COLOR_LAMBDA, key="c_lambda")
+                width_lambda_cust = c_l2.number_input("Lambda 太さ", 0.5, 5.0, 1.5, step=0.1, key="w_lambda")
+
+        # ------------------------------------
+        # Matplotlib 描画処理
+        # ------------------------------------
         plt.rcParams.update({'font.size': font_size})
         fig2, (ax2_vcd, ax2_ir) = plt.subplots(2, 1, sharex=True, figsize=(8, 9), 
-                                            gridspec_kw={'height_ratios': [1, 1]})
+                                                gridspec_kw={'height_ratios': [1, 1]})
         plt.subplots_adjust(hspace=0.05)
 
         ax2_vcd.axhline(0, color='black', linewidth=0.8, linestyle='-')
+        
+        # ピーク収集用リスト
+        all_peaks_list = []
+
+        # Delta Plot Loop
         for item in delta_data:
-            ax2_vcd.plot(item['x'], item['vcd'], color=color_delta_cust, linewidth=width_delta_cust)
-        for item in lambda_data:
-            ax2_vcd.plot(item['x'], item['vcd'], color=color_lambda_cust, linewidth=width_lambda_cust)
+            factor = scale_factors.get(item['filename'], 1.0)
+            # VCDのみスケーリングする仕様にする（IRは比較用のためそのままが多いが、必要ならここも掛ける）
+            y_vcd_scaled = item['vcd'] * factor
+            y_ir_scaled = item['ir'] # IRはスケーリングしない仕様（必要なら * factor）
             
+            label_txt = f"{item['filename']} (x{factor})" if factor != 1.0 else item['filename']
+            ax2_vcd.plot(item['x'], y_vcd_scaled, color=color_delta_cust, linewidth=width_delta_cust, label=label_txt)
+            ax2_ir.plot(item['x'], y_ir_scaled, color=color_delta_cust, linewidth=width_delta_cust)
+
+            # ピーク検出 (テーブル表示用)
+            pks, _ = find_peaks(y_ir_scaled, height=0.05, distance=20)
+            for p_idx in pks:
+                all_peaks_list.append({
+                    "Type": "Delta",
+                    "Filename": item['filename'],
+                    "Scale Factor": factor,
+                    "Wavenumber": item['x'][p_idx],
+                    "IR Abs": y_ir_scaled[p_idx],
+                    "VCD Int (Scaled)": y_vcd_scaled[p_idx]
+                })
+
+        # Lambda Plot Loop
+        for item in lambda_data:
+            factor = scale_factors.get(item['filename'], 1.0)
+            y_vcd_scaled = item['vcd'] * factor
+            y_ir_scaled = item['ir'] 
+            
+            label_txt = f"{item['filename']} (x{factor})" if factor != 1.0 else item['filename']
+            ax2_vcd.plot(item['x'], y_vcd_scaled, color=color_lambda_cust, linewidth=width_lambda_cust, label=label_txt)
+            ax2_ir.plot(item['x'], y_ir_scaled, color=color_lambda_cust, linewidth=width_lambda_cust)
+
+            # ピーク検出
+            pks, _ = find_peaks(y_ir_scaled, height=0.05, distance=20)
+            for p_idx in pks:
+                all_peaks_list.append({
+                    "Type": "Lambda",
+                    "Filename": item['filename'],
+                    "Scale Factor": factor,
+                    "Wavenumber": item['x'][p_idx],
+                    "IR Abs": y_ir_scaled[p_idx],
+                    "VCD Int (Scaled)": y_vcd_scaled[p_idx]
+                })
+
+        # VCD Axis Settings
         ax2_vcd.set_ylabel("VCD Intensity", fontsize=font_size)
         ax2_vcd.tick_params(direction='in', top=True, right=True, labelsize=font_size)
         if man_t2: ax2_vcd.set_ylim(t2_vcd_min, t2_vcd_max)
 
-        for item in delta_data:
-            ax2_ir.plot(item['x'], item['ir'], color=color_delta_cust, linewidth=width_delta_cust)
-        for item in lambda_data:
-            ax2_ir.plot(item['x'], item['ir'], color=color_lambda_cust, linewidth=width_lambda_cust)
-
+        # IR Axis Settings
         ax2_ir.set_ylabel("Absorbance", fontsize=font_size)
         ax2_ir.set_xlabel("Wavenumber ($cm^{-1}$)", fontsize=font_size)
         ax2_ir.tick_params(direction='in', top=True, right=True, labelsize=font_size)
         ax2_ir.set_xlim(t2_x_high, t2_x_low)
         if man_t2: ax2_ir.set_ylim(t2_ir_min, t2_ir_max)
 
+        # Legend
         if show_legend:
-            legend_elements = [
-                Line2D([0], [0], color=color_delta_cust, lw=width_delta_cust, label='Sample 1 (Delta)'),
-                Line2D([0], [0], color=color_lambda_cust, lw=width_lambda_cust, label='Sample 2 (Lambda)')
-            ]
-            ax2_vcd.legend(handles=legend_elements, loc='best', fontsize=font_size)
+            # Matplotlibの凡例をカスタム作成して色とファイル名を反映させるか、
+            # 自動生成させるか。ここでは自動生成を使用。
+            ax2_vcd.legend(loc='best', fontsize=font_size-2, frameon=True, framealpha=0.8)
 
         st.pyplot(fig2)
 
+        # ------------------------------------
+        # ピーク一覧テーブル (Comparison Tab)
+        # ------------------------------------
+        st.markdown("### 📋 ピーク一覧リスト")
+        if all_peaks_list:
+            df_all_peaks = pd.DataFrame(all_peaks_list)
+            # 見やすく並べ替え
+            df_all_peaks = df_all_peaks.sort_values(["Type", "Filename", "Wavenumber"], ascending=[True, True, False])
+            
+            st.dataframe(
+                df_all_peaks.style.format({
+                    "Wavenumber": "{:.2f}",
+                    "IR Abs": "{:.4f}",
+                    "VCD Int (Scaled)": "{:.6f}",
+                    "Scale Factor": "{:.1f}"
+                }), 
+                use_container_width=True
+            )
+        else:
+            st.info("ピークが検出されませんでした。")
+
+        # ------------------------------------
+        # 保存ボタン
+        # ------------------------------------
         st.markdown("---")
         c1, c2 = st.columns(2)
         buf_png = io.BytesIO()
@@ -381,6 +512,7 @@ def main():
         buf_png.seek(0)
         c1.download_button("グラフ画像 (PNG)", buf_png, "vcd_plot_comparison.png", "image/png")
         
+        # Gnuplotデータ作成 (注: Scale Factor反映前の生データを出力するか、反映後か。ここでは生データを出力)
         zip_dat = create_gnuplot_package(
             delta_data, lambda_data, 
             (t2_x_high, t2_x_low), (t2_vcd_min, t2_vcd_max), (t2_ir_min, t2_ir_max)
