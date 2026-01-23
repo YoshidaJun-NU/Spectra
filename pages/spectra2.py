@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import io
 from scipy.signal import find_peaks
-import plotly.graph_objects as go # Plotlyの追加
+import plotly.graph_objects as go
 
 # ---------------------------------------------------------
 # 定数定義
@@ -63,7 +63,7 @@ def generate_dummy_data():
     return data_list
 
 # ---------------------------------------------------------
-# 関数定義: ファイルデータの読み込み (JASCO CSV/TXT 対応強化版)
+# 関数定義: ファイルデータの読み込み
 # ---------------------------------------------------------
 def load_data(uploaded_files, separator, skip_rows, has_header):
     data_list = []
@@ -154,7 +154,7 @@ def main():
     if 'data_list' not in st.session_state:
         st.session_state['data_list'] = []
 
-    # --- サイドバー：データ読み込み設定 ---
+    # --- サイドバー：1. データ読み込み設定 ---
     st.sidebar.header("1. データ読み込み設定")
     uploaded_files = st.sidebar.file_uploader(
         "ファイルをアップロード", 
@@ -170,7 +170,6 @@ def main():
         st.session_state['data_list'] = load_data(uploaded_files, separator, skip_rows, has_header)
         init_styles(st.session_state['data_list'])
     
-    # ダミーデータボタン
     if st.sidebar.button("ダミーデータをロード"):
         st.session_state['data_list'] = generate_dummy_data()
         init_styles(st.session_state['data_list'])
@@ -178,7 +177,7 @@ def main():
 
     st.sidebar.markdown("---")
 
-    # --- サイドバー：表示データの選択 ---
+    # --- サイドバー：2. 表示データの選択 ---
     st.sidebar.header("2. 表示データの選択")
     selected_labels = []
     if st.session_state['data_list']:
@@ -189,11 +188,26 @@ def main():
 
     st.sidebar.markdown("---")
 
-    # --- サイドバー：共通グラフ設定 ---
+    # --- サイドバー：3. グラフ共通設定 (前処理) ---
     st.sidebar.header("3. グラフ共通設定")
-    do_normalize = st.sidebar.checkbox("正規化 (Min-Max)", value=False)
     
-    # --- データ前処理 ---
+    # -------------------------------------------
+    # 正規化設定の強化
+    # -------------------------------------------
+    do_normalize = st.sidebar.checkbox("正規化 (Normalize)", value=False)
+    norm_method = "Min-Max"
+    norm_target_wave = 500.0
+
+    if do_normalize:
+        norm_method = st.sidebar.radio(
+            "正規化基準", 
+            ("Min-Max (0-1)", "指定波長で正規化 (Int=1)"),
+            index=0
+        )
+        if norm_method == "指定波長で正規化 (Int=1)":
+            norm_target_wave = st.sidebar.number_input("基準波長 (nm)", value=500.0)
+
+    # --- データ前処理ループ ---
     full_data_list = st.session_state['data_list']
     target_data_list = [d for d in full_data_list if d['label'] in selected_labels]
     
@@ -201,9 +215,23 @@ def main():
     for item in target_data_list:
         x_vals = item['x']
         y_vals = item['y'].copy()
+        
+        # 正規化ロジック適用
         if do_normalize:
-            min_y, max_y = np.min(y_vals), np.max(y_vals)
-            if max_y - min_y != 0: y_vals = (y_vals - min_y) / (max_y - min_y)
+            if norm_method == "Min-Max (0-1)":
+                # 従来の方法
+                min_y, max_y = np.min(y_vals), np.max(y_vals)
+                if max_y - min_y != 0: 
+                    y_vals = (y_vals - min_y) / (max_y - min_y)
+            
+            elif norm_method == "指定波長で正規化 (Int=1)":
+                # 指定波長に最も近いインデックスを探して割り算
+                if len(x_vals) > 0:
+                    idx = (np.abs(x_vals - norm_target_wave)).argmin()
+                    ref_val = y_vals[idx]
+                    if ref_val != 0:
+                        y_vals = y_vals / ref_val
+
         display_data_list.append({'label': item['label'], 'x': x_vals, 'y': y_vals})
 
     # =========================================================
@@ -215,41 +243,66 @@ def main():
     # タブ1: 表示モード (Matplotlib)
     # ---------------------------------------------------------
     with tab_display:
-        st.caption("Matplotlibを使用した静的な高解像度プロットを作成します。論文やレポート用の画像出力に適しています。")
+        st.caption("Matplotlibを使用した静的な高解像度プロットを作成します。")
         
-        # 表示モード専用のサイドバー設定（のようなものをExpanderで配置）
-        with st.expander("グラフのスタイル設定", expanded=False):
-            c1, c2, c3 = st.columns(3)
-            x_label = c1.text_input("X軸ラベル", "Wavelength (nm)")
-            y_label = c2.text_input("Y軸ラベル", "Norm. Abs." if do_normalize else "Abs.")
-            legend_loc = c3.radio("凡例位置", ('Outside', 'Inside'))
-            
-            c1, c2 = st.columns(2)
-            show_grid = c1.checkbox("グリッド表示", value=True)
-            use_manual_range = c2.checkbox("軸範囲を手動設定", value=False)
-            
-            x_min, x_max, y_min, y_max = None, None, None, None
-            if use_manual_range:
-                cc1, cc2, cc3, cc4 = st.columns(4)
-                x_min = cc1.number_input("X Min", value=200.0)
-                x_max = cc2.number_input("X Max", value=800.0)
-                y_min = cc3.number_input("Y Min", value=-0.1)
-                y_max = cc4.number_input("Y Max", value=1.2)
+        col_settings_1, col_settings_2 = st.columns([1, 1])
 
-            # カラーマップ設定
-            use_custom_style = st.checkbox("個別スタイルを適用", value=False)
-            cmap_name = 'viridis'
-            if not use_custom_style:
-                cmap_name = st.selectbox("カラーマップ", ['viridis', 'jet', 'coolwarm', 'rainbow', 'Manual'], index=0)
-            else:
-                st.info("サイドバーで個別スタイルを設定できません。コード内のスタイル辞書が適用されます。")
-                # ここでは簡易化のため、Matplotlibモードでの詳細な個別設定UIは省略し、
-                # session_state['styles'] を参照する形にします
+        with col_settings_1:
+            with st.expander("🛠 全体設定・軸範囲", expanded=True):
+                # 軸ラベル (デフォルトをIntensityに変更)
+                c1, c2 = st.columns(2)
+                default_ylab = "Norm. Intensity" if do_normalize else "Intensity"
+                
+                x_label = c1.text_input("X軸ラベル", "Wavelength (nm)", key="disp_xlab")
+                y_label = c2.text_input("Y軸ラベル", default_ylab, key="disp_ylab")
+                
+                # グリッド・凡例
+                c1, c2 = st.columns(2)
+                show_grid = c1.checkbox("グリッド表示", value=True, key="disp_grid")
+                show_legend = c2.checkbox("凡例を表示", value=True, key="disp_show_leg")
+                
+                legend_loc = 'Best'
+                if show_legend:
+                    legend_loc = st.radio("凡例位置", ('Outside', 'Inside'), horizontal=True, key="disp_leg")
+                
+                # 軸範囲
+                st.markdown("---")
+                use_manual_range_disp = st.checkbox("軸範囲を手動設定", value=False, key="disp_range_chk")
+                disp_xmin, disp_xmax, disp_ymin, disp_ymax = None, None, None, None
+                if use_manual_range_disp:
+                    cc1, cc2 = st.columns(2)
+                    disp_xmin = cc1.number_input("X Min", value=200.0, key="disp_xmin")
+                    disp_xmax = cc2.number_input("X Max", value=800.0, key="disp_xmax")
+                    disp_ymin = cc1.number_input("Y Min", value=-0.1, key="disp_ymin")
+                    disp_ymax = cc2.number_input("Y Max", value=1.2, key="disp_ymax")
 
+        with col_settings_2:
+            with st.expander("🎨 スタイル設定", expanded=True):
+                use_custom_style = st.checkbox("個別スタイルを適用する", value=False, key="disp_custom")
+                
+                if not use_custom_style:
+                    cmap_name = st.selectbox("カラーマップ", ['viridis', 'jet', 'coolwarm', 'rainbow', 'Manual'], index=0, key="disp_cmap")
+                    st.caption("※「個別スタイル」を有効にすると、データごとに色や太さを変更できます。")
+                else:
+                    st.markdown("##### データごとの設定")
+                    if not display_data_list:
+                        st.info("データが選択されていません")
+                    with st.container(height=300):
+                        for item in display_data_list:
+                            lbl = item['label']
+                            if lbl in st.session_state['styles']:
+                                st.markdown(f"**{lbl}**")
+                                sc1, sc2 = st.columns([1, 1])
+                                new_color = sc1.color_picker("色", st.session_state['styles'][lbl]['color'], key=f"c_{lbl}")
+                                st.session_state['styles'][lbl]['color'] = new_color
+                                new_width = sc2.number_input("太さ", 0.5, 10.0, float(st.session_state['styles'][lbl]['linewidth']), step=0.5, key=f"w_{lbl}")
+                                st.session_state['styles'][lbl]['linewidth'] = new_width
+                                st.divider()
+
+        # --- 描画処理 ---
         if display_data_list:
             fig, ax = plt.subplots(figsize=(10, 6))
             
-            # カラー設定
             num_files = len(display_data_list)
             if not use_custom_style:
                 if cmap_name == 'Manual':
@@ -260,27 +313,34 @@ def main():
             
             for i, item in enumerate(display_data_list):
                 label = item['label']
-                # スタイル決定
                 if use_custom_style and label in st.session_state['styles']:
                     s = st.session_state['styles'][label]
-                    color, lw, ls = s['color'], s['linewidth'], LINE_STYLES.get(s['linestyle'], '-')
+                    color = s['color']
+                    lw = s['linewidth']
+                    ls = LINE_STYLES.get(s['linestyle'], '-')
                 else:
-                    color = colors_list[i] if not use_custom_style else 'black'
-                    lw, ls = 1.5, '-'
+                    color = colors_list[i]
+                    lw = 1.5
+                    ls = '-'
 
                 ax.plot(item['x'], item['y'], label=label, color=color, linewidth=lw, linestyle=ls, alpha=0.8)
 
             ax.set_xlabel(x_label, fontsize=12)
             ax.set_ylabel(y_label, fontsize=12)
             if show_grid: ax.grid(True, linestyle=':', alpha=0.6)
-            if use_manual_range: ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max)
             
-            if legend_loc == 'Outside': ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-            else: ax.legend(loc='best')
+            if use_manual_range_disp:
+                ax.set_xlim(disp_xmin, disp_xmax)
+                ax.set_ylim(disp_ymin, disp_ymax)
+            
+            if show_legend:
+                if legend_loc == 'Outside': 
+                    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+                else: 
+                    ax.legend(loc='best')
 
             st.pyplot(fig)
 
-            # ダウンロードボタン
             st.markdown("#### 📥 画像保存")
             col1, col2, col3 = st.columns(3)
             img_png = io.BytesIO()
@@ -300,46 +360,52 @@ def main():
     # タブ2: 解析モード (Plotly)
     # ---------------------------------------------------------
     with tab_analysis:
-        st.caption("Plotlyを使用したインタラクティブな解析です。マウスカーソルを合わせると値を読み取れます。")
+        st.caption("Plotlyを使用したインタラクティブな解析です。")
         
         if not display_data_list:
             st.warning("データが選択されていません。サイドバーでデータを選択してください。")
         else:
-            # --- 解析用コントロールパネル ---
-            st.subheader("🛠 解析設定")
-            col_a, col_b = st.columns(2)
-            
-            with col_a:
-                st.markdown("**1. 面積計算 (積分)**")
-                do_calc_area = st.checkbox("面積を計算・表示する", value=True)
-                c1, c2 = st.columns(2)
-                calc_start = c1.number_input("開始波長 (nm)", value=300.0, step=10.0)
-                calc_end = c2.number_input("終了波長 (nm)", value=500.0, step=10.0)
-                if calc_start > calc_end: calc_start, calc_end = calc_end, calc_start
-            
-            with col_b:
-                st.markdown("**2. ピーク検出**")
-                do_peak_search = st.checkbox("ピークを検出する", value=True)
-                c1, c2 = st.columns(2)
-                peak_prominence = c1.number_input("感度 (Prominence)", value=0.01, format="%.4f", step=0.005)
-                peak_distance = c2.number_input("最小距離 (Points)", value=10, step=1)
+            with st.expander("🛠 解析設定・軸範囲 (解析モード)", expanded=True):
+                st.markdown("**1. 軸範囲設定**")
+                use_manual_range_ana = st.checkbox("軸範囲を手動設定する", value=False, key="ana_range_chk")
+                ana_xmin, ana_xmax, ana_ymin, ana_ymax = None, None, None, None
+                
+                if use_manual_range_ana:
+                    cc1, cc2, cc3, cc4 = st.columns(4)
+                    ana_xmin = cc1.number_input("X Min", value=200.0, key="ana_xmin")
+                    ana_xmax = cc2.number_input("X Max", value=800.0, key="ana_xmax")
+                    ana_ymin = cc3.number_input("Y Min", value=-0.1, key="ana_ymin")
+                    ana_ymax = cc4.number_input("Y Max", value=1.2, key="ana_ymax")
+                
+                st.divider()
 
-            st.markdown("---")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.markdown("**2. 面積計算 (積分)**")
+                    do_calc_area = st.checkbox("面積を計算・表示する", value=True, key="ana_calc_area")
+                    c1, c2 = st.columns(2)
+                    calc_start = c1.number_input("開始波長 (nm)", value=300.0, step=10.0, key="ana_start")
+                    calc_end = c2.number_input("終了波長 (nm)", value=500.0, step=10.0, key="ana_end")
+                    if calc_start > calc_end: calc_start, calc_end = calc_end, calc_start
+                
+                with col_b:
+                    st.markdown("**3. ピーク検出**")
+                    do_peak_search = st.checkbox("ピークを検出する", value=True, key="ana_peak_chk")
+                    c1, c2 = st.columns(2)
+                    peak_prominence = c1.number_input("感度 (Prominence)", value=0.01, format="%.4f", step=0.005, key="ana_prom")
+                    peak_distance = c2.number_input("最小距離 (Points)", value=10, step=1, key="ana_dist")
 
-            # --- Plotly 描画 ---
             fig_p = go.Figure()
             
             peak_results_all = []
             area_results_all = []
-
-            # 色生成
+            
             colors = DEFAULT_COLORS * (len(display_data_list)//len(DEFAULT_COLORS) + 1)
 
             for i, item in enumerate(display_data_list):
                 color = colors[i]
                 label = item['label']
                 
-                # 1. メインのスペクトル描画
                 fig_p.add_trace(go.Scatter(
                     x=item['x'], y=item['y'],
                     mode='lines',
@@ -348,72 +414,68 @@ def main():
                     hovertemplate=f"<b>{label}</b><br>Wave: %{{x:.2f}} nm<br>Int: %{{y:.4f}}<extra></extra>"
                 ))
 
-                # 2. 面積計算と塗りつぶし
                 if do_calc_area:
                     mask = (item['x'] >= calc_start) & (item['x'] <= calc_end)
                     x_sub = item['x'][mask]
                     y_sub = item['y'][mask]
                     
                     if len(x_sub) > 1:
-                        # 面積計算 (台形公式)
                         area = np.trapezoid(y_sub, x_sub) if hasattr(np, 'trapezoid') else np.trapz(y_sub, x_sub)
                         area_results_all.append({'ファイル名': label, '面積': area})
                         
-                        # 塗りつぶし用トレース（閉じたポリゴンを作る）
-                        # x, yの配列の両端に y=0 の点を追加して閉じる
                         x_fill = np.concatenate(([x_sub[0]], x_sub, [x_sub[-1]]))
                         y_fill = np.concatenate(([0], y_sub, [0]))
                         
                         fig_p.add_trace(go.Scatter(
                             x=x_fill, y=y_fill,
                             fill='toself',
-                            mode='none', # 線は描かない
+                            mode='none', 
                             fillcolor=color,
                             opacity=0.2,
                             showlegend=False,
                             hoverinfo='skip'
                         ))
 
-                # 3. ピーク検出とマーカー表示
                 if do_peak_search:
                     peaks, _ = find_peaks(item['y'], prominence=peak_prominence, distance=peak_distance)
                     if len(peaks) > 0:
                         peak_x = item['x'][peaks]
                         peak_y = item['y'][peaks]
                         
-                        # テーブル用データ保存
                         for px, py in zip(peak_x, peak_y):
                             peak_results_all.append({'ファイル名': label, '波長 (nm)': px, '強度': py})
 
-                        # マーカー描画
                         fig_p.add_trace(go.Scatter(
                             x=peak_x, y=peak_y,
                             mode='markers',
                             marker=dict(symbol='triangle-down', size=10, color=color, line=dict(color='black', width=1)),
                             name=f"{label} Peaks",
-                            showlegend=False, # 凡例がうるさくなるので隠す
+                            showlegend=False,
                             hovertemplate=f"<b>{label} Peak</b><br>Wave: %{{x:.2f}} nm<br>Int: %{{y:.4f}}<extra></extra>"
                         ))
 
-            # レイアウト調整
-            fig_p.update_layout(
+            layout_args = dict(
                 title="Interactive Spectra Analysis",
                 xaxis_title="Wavelength (nm)",
                 yaxis_title="Intensity",
                 template="plotly_white",
                 height=600,
-                hovermode="x unified", # x軸を揃えてホバー表示
+                hovermode="x unified",
                 legend=dict(x=1.01, y=1)
             )
 
-            # 積分範囲の縦線を表示
+            if use_manual_range_ana:
+                layout_args['xaxis_range'] = [ana_xmin, ana_xmax]
+                layout_args['yaxis_range'] = [ana_ymin, ana_ymax]
+
+            fig_p.update_layout(**layout_args)
+
             if do_calc_area:
                 fig_p.add_vline(x=calc_start, line_width=1, line_dash="dash", line_color="gray")
                 fig_p.add_vline(x=calc_end, line_width=1, line_dash="dash", line_color="gray")
 
             st.plotly_chart(fig_p, use_container_width=True)
 
-            # --- 解析結果テーブルの表示 ---
             col_res1, col_res2 = st.columns(2)
             
             with col_res1:
@@ -429,7 +491,7 @@ def main():
                     df_peaks = pd.DataFrame(peak_results_all).sort_values(['ファイル名', '波長 (nm)'])
                     st.dataframe(df_peaks, use_container_width=True)
                 else:
-                    st.info("ピークが見つかりませんでした。感度設定を調整してください。")
+                    st.info("ピークが見つかりませんでした。")
 
 if __name__ == "__main__":
     main()
