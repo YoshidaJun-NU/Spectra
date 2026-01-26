@@ -18,7 +18,6 @@ def load_spectral_data(uploaded_file):
     {'filename': str, 'x': np.array, 'ir': np.array, 'vcd': np.array} の辞書を返す。
     """
     try:
-        # バイナリモードでなくテキストとしてデコード
         content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
         lines = content.splitlines()
         
@@ -32,8 +31,6 @@ def load_spectral_data(uploaded_file):
                 header_found = True
                 break
         
-        # データフレームとして読み込み
-        # タブ区切りまたはスペース区切りに対応
         try:
             if header_found:
                 # XYDATAが見つかった場合はその次から読む
@@ -41,19 +38,16 @@ def load_spectral_data(uploaded_file):
                 if df.shape[1] < 3: # タブで失敗したらスペースで再試行
                      df = pd.read_csv(io.StringIO(content), skiprows=skip_rows, sep='\s+', header=None, engine='python')
             else:
-                # 見つからない場合は先頭から（あるいはユーザー指定行があればここで処理可能）
-                # ここでは汎用的に読むためsep=Noneで推論させる
+                # 見つからない場合は自動推論
                 df = pd.read_csv(io.StringIO(content), sep=None, engine='python', header=None)
         except Exception as e:
             return None, f"パースエラー: {e}"
 
-        # 数値変換とNaN除去
         df = df.apply(pd.to_numeric, errors='coerce').dropna()
         
         if df.shape[1] < 3:
             return None, "列数が不足しています (波数, IR, VCDが必要です)"
 
-        # 一般的なJASCOデータ配列: 1列目=波数, 2列目=IR(Abs), 3列目=VCD(dAbs)
         x = df.iloc[:, 0].values
         ir = df.iloc[:, 1].values
         vcd = df.iloc[:, 2].values
@@ -69,12 +63,11 @@ def load_spectral_data(uploaded_file):
         return None, f"読み込み例外: {e}"
 
 # ---------------------------------------------------------
-# 関数: Gnuplot用パッケージ作成 (一括版)
+# 関数: Gnuplot用パッケージ作成
 # ---------------------------------------------------------
 def create_gnuplot_package(data_list, x_lim, vcd_lim, ir_lim):
     if not data_list: return None
     
-    # 全データのX軸（波数）を収集して共通軸を作成
     all_x = []
     for d in data_list:
         all_x.extend(d['x'])
@@ -84,16 +77,13 @@ def create_gnuplot_package(data_list, x_lim, vcd_lim, ir_lim):
     plot_cmds_vcd = []
     plot_cmds_ir = []
     
-    # カラーサイクル
     colors = list(mcolors.TABLEAU_COLORS.values())
     
     current_col = 2
     for i, d in enumerate(data_list):
-        # 共通軸へ補間
         ir_interp = np.interp(common_x, d['x'][::-1], d['ir'][::-1])
         vcd_interp = np.interp(common_x, d['x'][::-1], d['vcd'][::-1])
         
-        # カラム名 (ファイル名ベースだが安全な文字に置換)
         safe_name = f"File_{i+1}"
         df_out[f"{safe_name}_IR"] = ir_interp
         df_out[f"{safe_name}_VCD"] = vcd_interp
@@ -108,7 +98,6 @@ def create_gnuplot_package(data_list, x_lim, vcd_lim, ir_lim):
     data_str = df_out.to_csv(sep='\t', index=False, float_format='%.6f')
 
     xr = f"[{x_lim[0]}:{x_lim[1]}]"
-    # Y軸範囲指定があれば設定、なければオート
     yr_vcd = f"[{vcd_lim[0]}:{vcd_lim[1]}]" if vcd_lim[0] is not None else "[:]"
     yr_ir = f"[{ir_lim[0]}:{ir_lim[1]}]" if ir_lim[0] is not None else "[:]"
 
@@ -157,7 +146,6 @@ def main():
     # ==========================================
     st.sidebar.header("📂 ファイル読み込み")
     
-    # 複数ファイルアップローダー (一箇所に統合)
     uploaded_files = st.sidebar.file_uploader(
         "スペクトルファイルをアップロード (複数可)", 
         accept_multiple_files=True,
@@ -168,15 +156,12 @@ def main():
     if uploaded_files:
         data_list = []
         for f in uploaded_files:
-            # 既に読み込み済みでなければ解析
-            # (簡易的にファイル名で重複チェックしてもよいが、ここでは毎回読み直す)
             data, error_msg = load_spectral_data(f)
             if data:
                 data_list.append(data)
             else:
                 st.sidebar.error(f"{f.name}: {error_msg}")
         
-        # セッションステート更新
         if data_list:
             st.session_state['loaded_data'] = data_list
             st.sidebar.success(f"{len(data_list)} ファイルを読み込みました。")
@@ -201,16 +186,14 @@ def main():
         col_sel, col_peak = st.columns([1, 2])
         
         with col_sel:
-            # ファイル選択
             file_names = [d['filename'] for d in loaded_data]
             selected_idx = st.selectbox("解析するファイルを選択", range(len(file_names)), format_func=lambda x: file_names[x])
             selected_data = loaded_data[selected_idx]
             
-            # 軸範囲の手動設定
             with st.expander("軸範囲設定", expanded=False):
                 man_t1 = st.checkbox("手動設定を有効化", key="t1_man")
                 c1, c2 = st.columns(2)
-                t1_x_high = c1.number_input("X High (Left)", value=2000.0, key="t1_xh") # 初期値を変更
+                t1_x_high = c1.number_input("X High (Left)", value=2000.0, key="t1_xh")
                 t1_x_low = c2.number_input("X Low (Right)", value=800.0, key="t1_xl")
                 
                 t1_vcd_min, t1_vcd_max = None, None
@@ -237,10 +220,11 @@ def main():
             peak_ir = ir[peaks]
             peak_vcd = vcd[peaks]
 
+            # --- 修正箇所: vertical_spacingを0.05から0.15へ変更して間隔を広げました ---
             fig_p = make_subplots(
                 rows=2, cols=1, 
                 shared_xaxes=True, 
-                vertical_spacing=0.05,
+                vertical_spacing=0.15,  # ここを増やしました
                 subplot_titles=(f"VCD: {selected_data['filename']}", "IR Spectrum"),
                 row_heights=[0.5, 0.5]
             )
@@ -273,7 +257,7 @@ def main():
                 ), row=2, col=1)
 
             # レイアウト
-            fig_p.update_layout(height=600, hovermode="x unified", showlegend=False)
+            fig_p.update_layout(height=700, hovermode="x unified", showlegend=False)
             fig_p.update_xaxes(title_text="Wavenumber (cm⁻¹)", row=2, col=1)
             
             # 軸範囲適用
@@ -304,15 +288,12 @@ def main():
         
         with col_c_sel:
             st.markdown("##### 表示データの選択")
-            # デフォルトで全選択
             all_filenames = [d['filename'] for d in loaded_data]
             selected_files_compare = st.multiselect(
                 "プロットするファイルを選択", 
                 all_filenames, 
                 default=all_filenames
             )
-            
-            # 選択されたデータオブジェクトのリスト
             target_data = [d for d in loaded_data if d['filename'] in selected_files_compare]
         
         with col_c_opt:
@@ -327,7 +308,6 @@ def main():
                         val = st.number_input(f"x {d['filename']}", value=1.0, step=0.1, key=f"sf_{i}")
                         scale_factors[d['filename']] = val
             
-            # 軸範囲
             with st.expander("軸範囲・表示設定", expanded=False):
                 c1, c2 = st.columns(2)
                 t2_x_high = c1.number_input("X High", value=2000.0, key="t2_xh")
@@ -342,13 +322,11 @@ def main():
                     t2_ir_max = c1.number_input("IR Max", value=1.0, key="t2_imax")
                     t2_ir_min = c2.number_input("IR Min", value=0.0, key="t2_imin")
 
-        # Matplotlib 描画
         if target_data:
             fig2, (ax_vcd, ax_ir) = plt.subplots(2, 1, sharex=True, figsize=(10, 8), 
                                                  gridspec_kw={'height_ratios': [1, 1]})
             plt.subplots_adjust(hspace=0.05)
             
-            # カラーマップ
             colors = list(mcolors.TABLEAU_COLORS.values())
             
             for i, d in enumerate(target_data):
@@ -356,20 +334,18 @@ def main():
                 fname = d['filename']
                 factor = scale_factors.get(fname, 1.0)
                 
-                # データ取得とスケーリング
                 x_vals = d['x']
                 vcd_vals = d['vcd'] * factor
-                ir_vals = d['ir'] # IRはスケーリングしないのが一般的だが、必要ならここも
+                ir_vals = d['ir']
                 
                 label = f"{fname} (x{factor})" if factor != 1.0 else fname
                 
                 ax_vcd.plot(x_vals, vcd_vals, color=color, linewidth=1.2, label=label)
                 ax_ir.plot(x_vals, ir_vals, color=color, linewidth=1.2)
             
-            # スタイル調整
             ax_vcd.axhline(0, color='black', linewidth=0.8)
             ax_vcd.set_ylabel("VCD Intensity")
-            ax_vcd.set_xlim(t2_x_high, t2_x_low) # 反転
+            ax_vcd.set_xlim(t2_x_high, t2_x_low)
             if man_t2: ax_vcd.set_ylim(t2_vcd_min, t2_vcd_max)
             ax_vcd.legend(loc='upper right', fontsize='small', framealpha=0.5)
             
@@ -379,7 +355,6 @@ def main():
             
             st.pyplot(fig2)
             
-            # ダウンロード
             st.markdown("---")
             c1, c2 = st.columns(2)
             buf = io.BytesIO()
