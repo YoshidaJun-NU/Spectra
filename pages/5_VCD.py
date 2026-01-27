@@ -65,7 +65,7 @@ def load_spectral_data(uploaded_file):
 # ---------------------------------------------------------
 # 関数: Gnuplot用パッケージ作成
 # ---------------------------------------------------------
-def create_gnuplot_package(data_list, x_lim, vcd_lim, ir_lim):
+def create_gnuplot_package(data_list, style_dict, x_lim, vcd_lim, ir_lim):
     if not data_list: return None
     
     all_x = []
@@ -77,19 +77,25 @@ def create_gnuplot_package(data_list, x_lim, vcd_lim, ir_lim):
     plot_cmds_vcd = []
     plot_cmds_ir = []
     
-    colors = list(mcolors.TABLEAU_COLORS.values())
-    
     current_col = 2
     for i, d in enumerate(data_list):
+        fname = d['filename']
+        # スタイル辞書から設定を取得（なければデフォルト）
+        style = style_dict.get(fname, {'color': 'black', 'scale': 1.0})
+        color = style['color']
+        scale = style['scale']
+        
+        # 共通軸へ補間
         ir_interp = np.interp(common_x, d['x'][::-1], d['ir'][::-1])
-        vcd_interp = np.interp(common_x, d['x'][::-1], d['vcd'][::-1])
+        vcd_interp = np.interp(common_x, d['x'][::-1], d['vcd'][::-1]) * scale # ここで倍率反映
         
         safe_name = f"File_{i+1}"
         df_out[f"{safe_name}_IR"] = ir_interp
         df_out[f"{safe_name}_VCD"] = vcd_interp
         
-        color = colors[i % len(colors)]
-        title = d['filename'].replace('_', '\\_')
+        title = fname.replace('_', '\\_')
+        if scale != 1.0:
+            title += f" (x{scale})"
         
         plot_cmds_ir.append(f"'data.dat' u 1:{current_col} w l lc rgb '{color}' title '{title}'")
         plot_cmds_vcd.append(f"'data.dat' u 1:{current_col+1} w l lc rgb '{color}' notitle")
@@ -210,40 +216,34 @@ def main():
             do_peak = st.checkbox("ピーク検出マーカーを表示", value=True)
             peak_th = st.slider("ピークしきい値 (IR Abs)", 0.0, 2.0, 0.05, 0.01)
 
-        # Plotly プロット
         if selected_data:
             x, ir, vcd = selected_data['x'], selected_data['ir'], selected_data['vcd']
             
-            # ピーク検出
             peaks, _ = find_peaks(ir, height=peak_th, distance=10)
             peak_x = x[peaks]
             peak_ir = ir[peaks]
             peak_vcd = vcd[peaks]
 
-            # --- 修正箇所: vertical_spacingを0.05から0.15へ変更して間隔を広げました ---
             fig_p = make_subplots(
                 rows=2, cols=1, 
                 shared_xaxes=True, 
-                vertical_spacing=0.15,  # ここを増やしました
+                vertical_spacing=0.15, 
                 subplot_titles=(f"VCD: {selected_data['filename']}", "IR Spectrum"),
                 row_heights=[0.5, 0.5]
             )
 
-            # VCD Trace
             fig_p.add_trace(go.Scatter(
                 x=x, y=vcd, mode='lines', name='VCD',
                 line=dict(color='#00008B', width=1.5),
                 hovertemplate="Wave: %{x:.1f}<br>VCD: %{y:.6f}<extra></extra>"
             ), row=1, col=1)
 
-            # IR Trace
             fig_p.add_trace(go.Scatter(
                 x=x, y=ir, mode='lines', name='IR',
                 line=dict(color='#8B0000', width=1.5),
                 hovertemplate="Wave: %{x:.1f}<br>Abs: %{y:.4f}<extra></extra>"
             ), row=2, col=1)
             
-            # Peaks
             if do_peak and len(peak_x) > 0:
                 fig_p.add_trace(go.Scatter(
                     x=peak_x, y=peak_vcd, mode='markers', name='Peaks',
@@ -256,12 +256,10 @@ def main():
                     showlegend=False
                 ), row=2, col=1)
 
-            # レイアウト
             fig_p.update_layout(height=700, hovermode="x unified", showlegend=False)
             fig_p.update_xaxes(title_text="Wavenumber (cm⁻¹)", row=2, col=1)
             
-            # 軸範囲適用
-            x_range = [t1_x_high, t1_x_low] # 反転
+            x_range = [t1_x_high, t1_x_low]
             fig_p.update_xaxes(range=x_range, row=1, col=1)
             fig_p.update_xaxes(range=x_range, row=2, col=1)
             
@@ -297,18 +295,11 @@ def main():
             target_data = [d for d in loaded_data if d['filename'] in selected_files_compare]
         
         with col_c_opt:
-            st.markdown("##### グラフ設定")
-            c_scale = st.checkbox("各データのスケーリング倍率を設定する", value=False)
+            st.markdown("##### グラフ全体設定")
+            c_leg, c_dummy = st.columns(2)
+            show_legend = c_leg.checkbox("凡例 (Legend) を表示", value=True)
             
-            scale_factors = {}
-            if c_scale and target_data:
-                cols = st.columns(3)
-                for i, d in enumerate(target_data):
-                    with cols[i % 3]:
-                        val = st.number_input(f"x {d['filename']}", value=1.0, step=0.1, key=f"sf_{i}")
-                        scale_factors[d['filename']] = val
-            
-            with st.expander("軸範囲・表示設定", expanded=False):
+            with st.expander("軸範囲の設定", expanded=False):
                 c1, c2 = st.columns(2)
                 t2_x_high = c1.number_input("X High", value=2000.0, key="t2_xh")
                 t2_x_low = c2.number_input("X Low", value=800.0, key="t2_xl")
@@ -322,32 +313,69 @@ def main():
                     t2_ir_max = c1.number_input("IR Max", value=1.0, key="t2_imax")
                     t2_ir_min = c2.number_input("IR Min", value=0.0, key="t2_imin")
 
+        # --- 個別スタイル設定 ---
+        st.markdown("---")
+        st.markdown("##### 🎨 各プロットの詳細設定 (色・太さ・倍率)")
+        
+        # デフォルトカラーの準備
+        default_colors = list(mcolors.TABLEAU_COLORS.values())
+        plot_styles = {} # プロット時に使う設定を格納する辞書
+
         if target_data:
+            # 多くの設定項目が並ぶのでExpanderに入れる
+            with st.expander("設定パネルを開く", expanded=True):
+                # 3カラムで順次表示
+                cols = st.columns(3)
+                for i, d in enumerate(target_data):
+                    fname = d['filename']
+                    default_c = default_colors[i % len(default_colors)]
+                    
+                    with cols[i % 3]:
+                        st.markdown(f"**{fname}**")
+                        # 色、太さ、倍率
+                        c_col, c_wid, c_scl = st.columns([1, 1, 1])
+                        p_color = c_col.color_picker("Color", value=default_c, key=f"c_{fname}")
+                        p_width = c_wid.number_input("Width", value=1.5, step=0.5, key=f"w_{fname}")
+                        p_scale = c_scl.number_input("Scale(x)", value=1.0, step=0.5, key=f"s_{fname}")
+                        
+                        plot_styles[fname] = {
+                            'color': p_color,
+                            'width': p_width,
+                            'scale': p_scale
+                        }
+
+            # --- プロット作成 ---
             fig2, (ax_vcd, ax_ir) = plt.subplots(2, 1, sharex=True, figsize=(10, 8), 
                                                  gridspec_kw={'height_ratios': [1, 1]})
             plt.subplots_adjust(hspace=0.05)
             
-            colors = list(mcolors.TABLEAU_COLORS.values())
-            
-            for i, d in enumerate(target_data):
-                color = colors[i % len(colors)]
+            for d in target_data:
                 fname = d['filename']
-                factor = scale_factors.get(fname, 1.0)
+                style = plot_styles[fname]
+                
+                # スタイル適用
+                color = style['color']
+                width = style['width']
+                factor = style['scale']
                 
                 x_vals = d['x']
                 vcd_vals = d['vcd'] * factor
                 ir_vals = d['ir']
                 
-                label = f"{fname} (x{factor})" if factor != 1.0 else fname
+                label = f"{fname}"
+                if factor != 1.0:
+                    label += f" (x{factor})"
                 
-                ax_vcd.plot(x_vals, vcd_vals, color=color, linewidth=1.2, label=label)
-                ax_ir.plot(x_vals, ir_vals, color=color, linewidth=1.2)
+                ax_vcd.plot(x_vals, vcd_vals, color=color, linewidth=width, label=label)
+                ax_ir.plot(x_vals, ir_vals, color=color, linewidth=width)
             
             ax_vcd.axhline(0, color='black', linewidth=0.8)
             ax_vcd.set_ylabel("VCD Intensity")
             ax_vcd.set_xlim(t2_x_high, t2_x_low)
             if man_t2: ax_vcd.set_ylim(t2_vcd_min, t2_vcd_max)
-            ax_vcd.legend(loc='upper right', fontsize='small', framealpha=0.5)
+            
+            if show_legend:
+                ax_vcd.legend(loc='upper right', fontsize='small', framealpha=0.5)
             
             ax_ir.set_ylabel("Absorbance")
             ax_ir.set_xlabel("Wavenumber ($cm^{-1}$)")
@@ -355,6 +383,7 @@ def main():
             
             st.pyplot(fig2)
             
+            # --- ダウンロード ---
             st.markdown("---")
             c1, c2 = st.columns(2)
             buf = io.BytesIO()
@@ -363,7 +392,7 @@ def main():
             c1.download_button("グラフ画像を保存 (PNG)", buf, "comparison_plot.png", "image/png")
             
             zip_dat = create_gnuplot_package(
-                target_data, 
+                target_data, plot_styles,
                 (t2_x_high, t2_x_low), 
                 (t2_vcd_min, t2_vcd_max), 
                 (t2_ir_min, t2_ir_max)
