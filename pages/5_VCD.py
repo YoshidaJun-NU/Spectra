@@ -15,8 +15,8 @@ import matplotlib.colors as mcolors
 def load_spectral_data(uploaded_file):
     """
     JASCO形式のテキストファイルなどを読み込み、
-    {'filename': str, 'x': np.array, 'ir': np.array, 'vcd': np.array} の辞書を返す。
-    ※ LDファイルの場合、'vcd'キーにLD信号(3列目)、'ir'キーにAbs(2列目)が格納されます。
+    {'filename': str, 'x': array, 'ir': array, 'vcd': array, 'noise': array} を返す。
+    4列目がない場合は 'noise' に0の配列が入ります。
     """
     try:
         content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
@@ -25,7 +25,7 @@ def load_spectral_data(uploaded_file):
         skip_rows = 0
         header_found = False
         
-        # 'XYDATA' 行を探す (JASCO形式対応)
+        # 'XYDATA' 行を探す
         for i, line in enumerate(lines):
             if "XYDATA" in line:
                 skip_rows = i + 1
@@ -34,12 +34,10 @@ def load_spectral_data(uploaded_file):
         
         try:
             if header_found:
-                # XYDATAが見つかった場合はその次から読む
                 df = pd.read_csv(io.StringIO(content), skiprows=skip_rows, sep='\t', header=None, engine='python')
-                if df.shape[1] < 3: # タブで失敗したらスペースで再試行
+                if df.shape[1] < 2:
                      df = pd.read_csv(io.StringIO(content), skiprows=skip_rows, sep='\s+', header=None, engine='python')
             else:
-                # 見つからない場合は自動推論
                 df = pd.read_csv(io.StringIO(content), sep=None, engine='python', header=None)
         except Exception as e:
             return None, f"パースエラー: {e}"
@@ -47,17 +45,24 @@ def load_spectral_data(uploaded_file):
         df = df.apply(pd.to_numeric, errors='coerce').dropna()
         
         if df.shape[1] < 3:
-            return None, "列数が不足しています (波数, IR/Abs, VCD/LDが必要です)"
+            return None, "列数が不足しています (最低3列必要)"
 
         x = df.iloc[:, 0].values
-        col2 = df.iloc[:, 1].values # Absorbance or IR
+        col2 = df.iloc[:, 1].values # IR or Abs
         col3 = df.iloc[:, 2].values # VCD or LD
+        
+        # 4列目がある場合は取得、なければ0で埋める
+        if df.shape[1] >= 4:
+            col4 = df.iloc[:, 3].values
+        else:
+            col4 = np.zeros_like(x)
         
         return {
             'filename': uploaded_file.name,
             'x': x,
-            'ir': col2,  # 便宜上 ir と呼ぶ (2列目)
-            'vcd': col3  # 便宜上 vcd と呼ぶ (3列目: LD信号など)
+            'ir': col2,  
+            'vcd': col3,
+            'noise': col4
         }, None
 
     except Exception as e:
@@ -66,7 +71,8 @@ def load_spectral_data(uploaded_file):
 # ---------------------------------------------------------
 # 関数: Gnuplot用パッケージ作成
 # ---------------------------------------------------------
-def create_gnuplot_package(data_list, style_dict, x_lim, y1_lim, y2_lim, label_y1="Signal", label_y2="Absorbance"):
+def create_gnuplot_package(data_list, style_dict, x_lim, y1_lim, y2_lim, y3_lim, 
+                           label_y1="Signal", label_y2="Absorbance", label_y3="Noise", include_noise=False):
     if not data_list: return None
     
     all_x = []
@@ -77,7 +83,9 @@ def create_gnuplot_package(data_list, style_dict, x_lim, y1_lim, y2_lim, label_y
     df_out = pd.DataFrame({'Wavenumber': common_x})
     plot_cmds_y1 = []
     plot_cmds_y2 = []
+    plot_cmds_y3 = []
     
+    # データの書き出し
     current_col = 2
     for i, d in enumerate(data_list):
         fname = d['filename']
@@ -86,48 +94,91 @@ def create_gnuplot_package(data_list, style_dict, x_lim, y1_lim, y2_lim, label_y
         scale = style['scale']
         
         # 共通軸へ補間
-        y2_interp = np.interp(common_x, d['x'][::-1], d['ir'][::-1])      # 2列目 (Abs)
-        y1_interp = np.interp(common_x, d['x'][::-1], d['vcd'][::-1]) * scale # 3列目 (Signal) * Scale
+        y2_interp = np.interp(common_x, d['x'][::-1], d['ir'][::-1])          # 2列目
+        y1_interp = np.interp(common_x, d['x'][::-1], d['vcd'][::-1]) * scale # 3列目
+        y3_interp = np.interp(common_x, d['x'][::-1], d['noise'][::-1]) * scale # 4列目 (スケール適用)
         
         safe_name = f"File_{i+1}"
         df_out[f"{safe_name}_Abs"] = y2_interp
         df_out[f"{safe_name}_Sig"] = y1_interp
+        df_out[f"{safe_name}_Nse"] = y3_interp
         
         title = fname.replace('_', '\\_')
-        if scale != 1.0:
-            title += f" (x{scale})"
+        if scale != 1.0: title += f" (x{scale})"
         
-        # Gnuplot: Column order is Wavenumber, Abs, Signal
+        # col, col+1, col+2
         plot_cmds_y2.append(f"'data.dat' u 1:{current_col} w l lc rgb '{color}' title '{title}'")
         plot_cmds_y1.append(f"'data.dat' u 1:{current_col+1} w l lc rgb '{color}' notitle")
-        current_col += 2
+        if include_noise:
+            plot_cmds_y3.append(f"'data.dat' u 1:{current_col+2} w l lc rgb '{color}' notitle")
+        
+        current_col += 3
 
     data_str = df_out.to_csv(sep='\t', index=False, float_format='%.6f')
 
     xr = f"[{x_lim[0]}:{x_lim[1]}]"
     yr_y1 = f"[{y1_lim[0]}:{y1_lim[1]}]" if y1_lim[0] is not None else "[:]"
     yr_y2 = f"[{y2_lim[0]}:{y2_lim[1]}]" if y2_lim[0] is not None else "[:]"
+    yr_y3 = f"[{y3_lim[0]}:{y3_lim[1]}]" if y3_lim[0] is not None else "[:]"
 
-    script = f"""
-set terminal pngcairo size 800,800 font "Arial,12"
-set output 'plot.png'
-set multiplot layout 2,1 margins 0.15, 0.95, 0.1, 0.95 spacing 0.05
-set xrange {xr}
-set grid ls 1 lc rgb "gray" lw 0.5 dt 2
+    # Gnuplotスクリプトの組み立て
+    # レイアウト: Noiseありなら3段、なしなら2段
+    if include_noise:
+        layout_cfg = "3,1 margins 0.15, 0.95, 0.1, 0.95 spacing 0.05"
+        # Plot 1: VCD/LD
+        p1 = f"""
 set ylabel "{label_y1}"
 set yrange {yr_y1}
-set lmargin 12
 set bmargin 0
 set format x ""
 set xzeroaxis lt 1 lc rgb "black" lw 1
 plot {', '.join(plot_cmds_y1)}
+"""
+        # Plot 2: IR/Abs
+        p2 = f"""
+set ylabel "{label_y2}"
+set yrange {yr_y2}
+plot {', '.join(plot_cmds_y2)}
+"""
+        # Plot 3: Noise
+        p3 = f"""
+set ylabel "{label_y3}"
+set yrange {yr_y3}
+set xlabel "Wavenumber (cm^{{-1}})"
+set bmargin 4
+set format x "%g"
+plot {', '.join(plot_cmds_y3)}
+"""
+        plot_body = p1 + p2 + p3
+    else:
+        layout_cfg = "2,1 margins 0.15, 0.95, 0.1, 0.95 spacing 0.05"
+        p1 = f"""
+set ylabel "{label_y1}"
+set yrange {yr_y1}
+set bmargin 0
+set format x ""
+set xzeroaxis lt 1 lc rgb "black" lw 1
+plot {', '.join(plot_cmds_y1)}
+"""
+        p2 = f"""
 set ylabel "{label_y2}"
 set yrange {yr_y2}
 set xlabel "Wavenumber (cm^{{-1}})"
 set bmargin 4
-set tmargin 0
 set format x "%g"
 plot {', '.join(plot_cmds_y2)}
+"""
+        plot_body = p1 + p2
+
+    script = f"""
+set terminal pngcairo size 800,{900 if include_noise else 800} font "Arial,12"
+set output 'plot.png'
+set multiplot layout {layout_cfg}
+set xrange {xr}
+set grid ls 1 lc rgb "gray" lw 0.5 dt 2
+set lmargin 12
+set tmargin 0
+{plot_body}
 unset multiplot
     """
     
@@ -153,14 +204,13 @@ def main():
     # ==========================================
     st.sidebar.header("📂 ファイル読み込み")
     
-    # --- VCD用アップローダー ---
     st.sidebar.subheader("VCD解析用 (Tab 1, 2)")
     uploaded_vcd = st.sidebar.file_uploader(
         "VCDファイルをアップロード", 
         accept_multiple_files=True,
         key="up_vcd",
         type=['txt', 'csv', 'dat'],
-        help="波数, IR, VCDの3列データ"
+        help="波数, IR, VCD, (Noise) のデータ"
     )
     if uploaded_vcd:
         data_list = []
@@ -174,14 +224,13 @@ def main():
 
     st.sidebar.markdown("---")
 
-    # --- LD用アップローダー ---
     st.sidebar.subheader("LD解析用 (Tab 3)")
     uploaded_ld = st.sidebar.file_uploader(
         "LDファイルをアップロード", 
         accept_multiple_files=True,
         key="up_ld",
         type=['txt', 'csv', 'dat'],
-        help="波数, Abs, LDの3列データ"
+        help="波数, Abs, LD のデータ"
     )
     if uploaded_ld:
         data_list = []
@@ -269,30 +318,28 @@ def main():
             st.info("サイドバーからVCDファイルを読み込んでください。")
         else:
             st.subheader("VCD: Multi-Spectra Comparison")
-            render_comparison_plot(vcd_data, "vcd", "VCD Intensity", "Absorbance")
+            # VCDタブのみノイズ表示オプションを有効にする
+            render_comparison_plot(vcd_data, "vcd", "VCD Intensity", "Absorbance", allow_noise=True)
 
     # ==========================================
-    # Tab 3: LD解析 (New)
+    # Tab 3: LD解析 (Linear Dichroism)
     # ==========================================
     with tab3:
         if not ld_data:
             st.info("サイドバーの「LD解析用」エリアからファイルを読み込んでください。")
         else:
             st.subheader("LD (Linear Dichroism) Analysis")
-            st.markdown("1列目(波数) vs 3列目(LD信号)、1列目(波数) vs 2列目(Abs) をプロットします。")
-            render_comparison_plot(ld_data, "ld", "LD Signal (3rd Col)", "Absorbance (2nd Col)")
+            # LDは2列のみ表示（ノイズ非表示）
+            render_comparison_plot(ld_data, "ld", "LD Signal (3rd Col)", "Absorbance (2nd Col)", allow_noise=False)
 
 
 # ---------------------------------------------------------
 # 共通描画ロジック (VCD/LD共用)
 # ---------------------------------------------------------
-def render_comparison_plot(data_source, prefix, label_y1, label_y2):
+def render_comparison_plot(data_source, prefix, label_y1, label_y2, allow_noise=False):
     """
     比較プロットを描画する共通関数
-    data_source: データのリスト
-    prefix: キーの一意性を保つためのプレフィックス ('vcd' or 'ld')
-    label_y1: 上段グラフのY軸ラベル
-    label_y2: 下段グラフのY軸ラベル
+    allow_noise=True の場合、4列目を表示するオプションが出現する
     """
     col_c_sel, col_c_opt = st.columns([1, 2])
     
@@ -304,9 +351,16 @@ def render_comparison_plot(data_source, prefix, label_y1, label_y2):
         )
         target_data = [d for d in data_source if d['filename'] in selected_files]
     
+    # 状態管理変数
+    show_noise = False
+    
     with col_c_opt:
         st.markdown("##### グラフ設定")
-        show_legend = st.checkbox("凡例を表示", value=True, key=f"{prefix}_leg")
+        c_leg, c_noise = st.columns(2)
+        show_legend = c_leg.checkbox("凡例を表示", value=True, key=f"{prefix}_leg")
+        
+        if allow_noise:
+            show_noise = c_noise.checkbox("ノイズ (4列目) を表示", value=False, key=f"{prefix}_nse")
         
         with st.expander("軸範囲設定", expanded=False):
             c1, c2 = st.columns(2)
@@ -316,11 +370,20 @@ def render_comparison_plot(data_source, prefix, label_y1, label_y2):
             man_y = st.checkbox("Y軸範囲固定", key=f"{prefix}_many")
             y1_min, y1_max = None, None
             y2_min, y2_max = None, None
+            y3_min, y3_max = None, None
+            
             if man_y:
-                y1_max = c1.number_input(f"{label_y1} Max", value=0.0005, format="%.5f", key=f"{prefix}_y1x")
-                y1_min = c2.number_input(f"{label_y1} Min", value=-0.0005, format="%.5f", key=f"{prefix}_y1n")
-                y2_max = c1.number_input(f"{label_y2} Max", value=1.0, key=f"{prefix}_y2x")
-                y2_min = c2.number_input(f"{label_y2} Min", value=0.0, key=f"{prefix}_y2n")
+                # 1段目
+                y1_max = c1.number_input(f"1段目({label_y1}) Max", value=0.0005, format="%.5f", key=f"{prefix}_y1x")
+                y1_min = c2.number_input(f"1段目({label_y1}) Min", value=-0.0005, format="%.5f", key=f"{prefix}_y1n")
+                # 2段目
+                y2_max = c1.number_input(f"2段目({label_y2}) Max", value=1.0, key=f"{prefix}_y2x")
+                y2_min = c2.number_input(f"2段目({label_y2}) Min", value=0.0, key=f"{prefix}_y2n")
+                
+                if show_noise:
+                    # 3段目
+                    y3_max = c1.number_input("3段目(Noise) Max", value=0.0005, format="%.5f", key=f"{prefix}_y3x")
+                    y3_min = c2.number_input("3段目(Noise) Min", value=-0.0005, format="%.5f", key=f"{prefix}_y3n")
 
     st.markdown("---")
     st.markdown("##### 🎨 スタイル設定 (色・太さ・倍率)")
@@ -337,13 +400,21 @@ def render_comparison_plot(data_source, prefix, label_y1, label_y2):
                 with cols[i % 3]:
                     st.caption(f"**{fname}**")
                     cc, cw, cs = st.columns([1, 1, 1])
-                    p_color = cc.color_picker("Color", value=default_c, key=f"{prefix}_c_{i}")
+                    p_color = cc.color_picker("Col", value=default_c, key=f"{prefix}_c_{i}")
                     p_width = cw.number_input("Wid", value=1.5, step=0.5, key=f"{prefix}_w_{i}")
-                    p_scale = cs.number_input("Scl(x)", value=1.0, step=0.5, key=f"{prefix}_s_{i}")
+                    p_scale = cs.number_input("Scl", value=1.0, step=0.5, key=f"{prefix}_s_{i}")
                     plot_styles[fname] = {'color': p_color, 'width': p_width, 'scale': p_scale}
 
-        # Plot
-        fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(10, 8), gridspec_kw={'height_ratios': [1, 1]})
+        # --- Plot 作成 ---
+        # NoiseONなら3行、OFFなら2行
+        if show_noise:
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, sharex=True, figsize=(10, 10), 
+                                                gridspec_kw={'height_ratios': [1, 1, 1]})
+        else:
+            fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(10, 8), 
+                                           gridspec_kw={'height_ratios': [1, 1]})
+            ax3 = None
+
         plt.subplots_adjust(hspace=0.05)
         
         for d in target_data:
@@ -354,24 +425,39 @@ def render_comparison_plot(data_source, prefix, label_y1, label_y2):
             factor = style['scale']
             
             x_vals = d['x']
-            # data['vcd']に3列目(LD)、data['ir']に2列目(Abs)が入っている
-            y1_vals = d['vcd'] * factor 
+            y1_vals = d['vcd'] * factor
             y2_vals = d['ir']
+            y3_vals = d['noise'] * factor # Noiseにも倍率適用
             
             label = f"{fname}" + (f" (x{factor})" if factor != 1.0 else "")
             
+            # Plot
             ax1.plot(x_vals, y1_vals, color=color, linewidth=width, label=label)
             ax2.plot(x_vals, y2_vals, color=color, linewidth=width)
+            if show_noise and ax3 is not None:
+                ax3.plot(x_vals, y3_vals, color=color, linewidth=width)
         
+        # Style adjustments
+        # AX1
         ax1.axhline(0, color='black', linewidth=0.8)
         ax1.set_ylabel(label_y1)
         ax1.set_xlim(x_high, x_low)
         if man_y: ax1.set_ylim(y1_min, y1_max)
         if show_legend: ax1.legend(loc='upper right', fontsize='small', framealpha=0.5)
         
+        # AX2
         ax2.set_ylabel(label_y2)
-        ax2.set_xlabel("Wavenumber ($cm^{-1}$)")
         if man_y: ax2.set_ylim(y2_min, y2_max)
+        
+        # AX3 (Optional)
+        if show_noise and ax3 is not None:
+            ax3.axhline(0, color='black', linewidth=0.8)
+            ax3.set_ylabel("Noise (4th Col)")
+            ax3.set_xlabel("Wavenumber ($cm^{-1}$)")
+            if man_y: ax3.set_ylim(y3_min, y3_max)
+        else:
+            # Noiseがない場合はAX2が一番下
+            ax2.set_xlabel("Wavenumber ($cm^{-1}$)")
         
         st.pyplot(fig)
         
@@ -385,7 +471,8 @@ def render_comparison_plot(data_source, prefix, label_y1, label_y2):
         
         zip_dat = create_gnuplot_package(
             target_data, plot_styles, (x_high, x_low), 
-            (y1_min, y1_max), (y2_min, y2_max), label_y1, label_y2
+            (y1_min, y1_max), (y2_min, y2_max), (y3_min, y3_max),
+            label_y1, label_y2, "Noise", include_noise=show_noise
         )
         if zip_dat:
             c2.download_button("Gnuplotデータ (.zip)", zip_dat, f"{prefix}_gnuplot.zip", "application/zip")
