@@ -10,20 +10,14 @@ from plotly.subplots import make_subplots
 import matplotlib.colors as mcolors
 
 # ---------------------------------------------------------
-# 関数: データ読み込み (JASCO形式 or 汎用CSV/TXT)
+# 関数: データ読み込み (強化版)
 # ---------------------------------------------------------
 def load_spectral_data(uploaded_file, params):
     """
     ファイルを読み込み、指定された列マッピングに基づいて辞書を返す。
-    params: {
-        'skip_rows': int, 
-        'comment': str or None, 
-        'sep': str, 
-        'cols': {'x': int, 'ir': int, 'vcd': int, 'noise': int} (0-based index)
-    }
+    エラー発生時の自動リカバリ機能付き。
     """
     try:
-        # バイナリデータをテキストとしてデコード
         content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
         lines = content.splitlines()
         
@@ -38,34 +32,53 @@ def load_spectral_data(uploaded_file, params):
         
         df = None
         
-        # --- 2. 読み込み処理 ---
-        # JASCO形式と判定された場合は優先的にその仕様で読む
+        # --- 2. JASCO形式読み込み ---
         if is_jasco:
             try:
-                # JASCOはタブまたはスペース区切り
                 df = pd.read_csv(io.StringIO(content), skiprows=jasco_skip, sep='\t', header=None, engine='python')
                 if df.shape[1] < 2:
                      df = pd.read_csv(io.StringIO(content), skiprows=jasco_skip, sep='\s+', header=None, engine='python')
             except:
                 pass # 失敗したら汎用読み込みへ
         
-        # 汎用読み込み (JASCOでない、またはJASCO読み込み失敗時)
+        # --- 3. 汎用読み込み (エラー回避ロジック強化) ---
         if df is None:
             sep_char = params['sep']
-            # 'auto'の場合は sep=None (Python engineで自動判定)
             sep_arg = None if sep_char == 'auto' else sep_char
+            comment_arg = params['comment']
+            skip_rows = params['skip_rows']
+
+            # 【自動調整】 コメント文字が未指定で、ファイルの先頭が '#' なら自動設定
+            if not comment_arg and lines and lines[0].strip().startswith('#'):
+                comment_arg = '#'
             
             try:
+                # トライ1: 指定設定で読み込み
                 df = pd.read_csv(
                     io.StringIO(content), 
-                    skiprows=params['skip_rows'], 
+                    skiprows=skip_rows, 
                     sep=sep_arg, 
-                    comment=params['comment'], 
+                    comment=comment_arg, 
                     header=None, 
                     engine='python'
                 )
-            except Exception as e:
-                return None, f"CSV読み込みエラー: {e}"
+            except Exception:
+                # トライ2: 失敗時、区切り文字がauto(None)なら、スペース区切り('\s+')で強制リトライ
+                # (Could not determine delimiter エラー対策)
+                if sep_arg is None:
+                    try:
+                        df = pd.read_csv(
+                            io.StringIO(content), 
+                            skiprows=skip_rows, 
+                            sep='\s+', 
+                            comment=comment_arg, 
+                            header=None, 
+                            engine='python'
+                        )
+                    except Exception as e:
+                        return None, f"読み込み失敗(Retry): {e}"
+                else:
+                    return None, f"読み込み失敗: 設定を確認してください"
 
         # 数値変換
         df = df.apply(pd.to_numeric, errors='coerce').dropna()
@@ -73,39 +86,34 @@ def load_spectral_data(uploaded_file, params):
         if df.empty:
             return None, "有効なデータ行がありません (ヘッダー行数やコメント文字を確認してください)"
 
-        # --- 3. 列データの抽出 (マッピング適用) ---
-        # データフレームの列数チェック
-        max_col_idx = max(params['cols'].values())
-        if df.shape[1] <= max_col_idx:
-            # 必須列(X, IR, VCD)が含まれているかチェック
-            # 最低でもXとIR(またはVCD)が必要
-            required_max = max(params['cols']['x'], params['cols']['ir'], params['cols']['vcd'])
-            # ノイズ列などが指定されていて、実際のデータにない場合は許容し、0埋めする処理が必要
-            # ここではシンプルに、「指定されたインデックスが範囲外なら0埋め」にする
-        
+        # --- 4. 列データの抽出 (マッピング適用) ---
+        # 存在しない列を指定された場合は0埋め配列を返すヘルパー
         def get_col_data(df, idx):
             if 0 <= idx < df.shape[1]:
                 return df.iloc[:, idx].values
             return np.zeros(len(df))
 
-        x = get_col_data(df, params['cols']['x'])
-        # X軸が全て0なら読み込み失敗の可能性が高い
-        if np.all(x == 0) and df.shape[1] > 0:
-             # マッピングミスの可能性: ユーザー指定列が範囲外の場合
-             return None, f"指定されたX列({params['cols']['x']+1}列目)が見つかりません (データ列数: {df.shape[1]})"
+        # マッピング (0-based)
+        col_x_idx = params['cols']['x']
+        col_ir_idx = params['cols']['ir']
+        col_vcd_idx = params['cols']['vcd']
+        col_noise_idx = params['cols']['noise']
 
-        col_ir = get_col_data(df, params['cols']['ir'])
-        col_vcd = get_col_data(df, params['cols']['vcd'])
-        col_noise = get_col_data(df, params['cols']['noise'])
+        # X列チェック
+        if col_x_idx >= df.shape[1]:
+             return None, f"指定されたX列({col_x_idx+1}列目)がデータ内に存在しません (全{df.shape[1]}列)"
 
-        # 先頭5行 (確認用)
-        # 表示用に列名を付ける
+        x = get_col_data(df, col_x_idx)
+        col_ir = get_col_data(df, col_ir_idx)
+        col_vcd = get_col_data(df, col_vcd_idx)
+        col_noise = get_col_data(df, col_noise_idx)
+
+        # 先頭5行 (確認用DF作成)
         head_df = pd.DataFrame()
-        head_df['X'] = x[:5]
-        head_df['IR/Abs'] = col_ir[:5]
-        head_df['VCD/Sig'] = col_vcd[:5]
-        if params['cols']['noise'] < df.shape[1]:
-            head_df['Noise'] = col_noise[:5]
+        head_df[f'Col{col_x_idx+1}(X)'] = x[:5]
+        # 列が存在する場合のみプレビューに追加
+        if col_ir_idx < df.shape[1]: head_df[f'Col{col_ir_idx+1}(IR)'] = col_ir[:5]
+        if col_vcd_idx < df.shape[1]: head_df[f'Col{col_vcd_idx+1}(VCD)'] = col_vcd[:5]
         
         return {
             'filename': uploaded_file.name,
@@ -135,6 +143,7 @@ def merge_vcd_ir_data(vcd_source, ir_source, new_filename):
     ir_x = ir_source['x']
     ir_vals_raw = ir_source['ir']
     
+    # 補間処理 (X軸の昇順・降順に対応)
     if len(x_master) > 1 and x_master[0] > x_master[-1]: 
         new_ir = np.interp(x_master, ir_x[::-1], ir_vals_raw[::-1])
     else:
@@ -204,7 +213,6 @@ def create_gnuplot_package(data_list, style_dict, x_lim, y1_lim, y2_lim, y3_lim,
     layout_rows = 3 if include_noise else 2
     height = 900 if include_noise else 800
     
-    # Plot blocks
     p1 = f"""
 set ylabel "{label_y1}"
 set yrange {yr_y1}
@@ -270,7 +278,7 @@ def main():
 
     # --- 読み込み詳細設定 ---
     with st.sidebar.expander("⚙️ 読み込み詳細設定 (非JASCO形式)", expanded=False):
-        st.caption("JASCO(XYDATA)形式以外の場合に適用されます。")
+        st.caption("※ '#'で始まる行は自動的にコメントとみなされますが、ここで明示的に指定も可能です。")
         
         c_p1, c_p2 = st.columns(2)
         p_skip = c_p1.number_input("ヘッダー行数 (Skip)", value=0, min_value=0)
@@ -284,13 +292,11 @@ def main():
         col_vcd = c_col1.number_input("VCD/Sig (1段目)", value=3, min_value=1)
         col_noise = c_col2.number_input("Noise (3段目)", value=4, min_value=1)
 
-    # パラメータ辞書作成
     sep_map = {"自動 (Space/Tab)": "auto", "カンマ (,)": ",", "タブ (\\t)": "\t"}
     load_params = {
         "skip_rows": p_skip,
         "sep": sep_map[p_sep_mode],
         "comment": p_comment if p_comment else None,
-        # 0-based indexに変換
         "cols": {"x": col_x-1, "ir": col_ir-1, "vcd": col_vcd-1, "noise": col_noise-1}
     }
 
@@ -301,7 +307,7 @@ def main():
         accept_multiple_files=True,
         key="up_vcd",
         type=['txt', 'csv', 'dat'],
-        help="波数, IR, VCD, (Noise) のデータ"
+        help="自動判別できないファイルは上の「詳細設定」を調整してください"
     )
     if uploaded_vcd:
         data_list = []
@@ -324,12 +330,11 @@ def main():
         accept_multiple_files=True,
         key="up_ld",
         type=['txt', 'csv', 'dat'],
-        help="波数, Abs, LD のデータ"
+        help="自動判別できないファイルは上の「詳細設定」を調整してください"
     )
     if uploaded_ld:
         data_list = []
         for f in uploaded_ld:
-            # LDの場合、UI上の「VCD/Sig」設定をLD列として読む
             data, error_msg = load_spectral_data(f, load_params)
             if data: data_list.append(data)
             else: st.sidebar.error(f"LD Error {f.name}: {error_msg}")
@@ -360,7 +365,7 @@ def main():
                 st.session_state['vcd_data'].append(merged_data)
                 st.sidebar.success(f"結合完了: {new_name}")
 
-    # === データ確認 (先頭5行) ===
+    # === データ確認 ===
     all_loaded = st.session_state['vcd_data'] + st.session_state['ld_data']
     if all_loaded:
         st.sidebar.markdown("---")
@@ -369,7 +374,7 @@ def main():
             sel_check = st.selectbox("確認するファイル", file_opts)
             for d in all_loaded:
                 if d['filename'] == sel_check:
-                    st.caption("※設定に基づいて読み込まれたデータ")
+                    st.caption("※設定に基づいて抽出されたデータ列")
                     st.dataframe(d['head'])
                     break
 
@@ -382,7 +387,7 @@ def main():
     ld_data = st.session_state['ld_data']
 
     # ==========================================
-    # Tab 1: VCD 個別解析 (Interactive)
+    # Tab 1: VCD 個別解析
     # ==========================================
     with tab1:
         if not vcd_data:
@@ -442,7 +447,7 @@ def main():
                 st.plotly_chart(fig_p, use_container_width=True)
 
     # ==========================================
-    # Tab 2: VCD 比較プロット (Comparison)
+    # Tab 2: VCD 比較プロット
     # ==========================================
     with tab2:
         if not vcd_data:
@@ -452,7 +457,7 @@ def main():
             render_comparison_plot(vcd_data, "vcd", "VCD Intensity", "Absorbance", allow_noise=True)
 
     # ==========================================
-    # Tab 3: LD解析 (Linear Dichroism)
+    # Tab 3: LD解析
     # ==========================================
     with tab3:
         if not ld_data:
@@ -463,7 +468,7 @@ def main():
 
 
 # ---------------------------------------------------------
-# 共通描画ロジック (VCD/LD共用)
+# 共通描画ロジック
 # ---------------------------------------------------------
 def render_comparison_plot(data_source, prefix, label_y1, label_y2, allow_noise=False):
     col_c_sel, col_c_opt = st.columns([1, 2])
@@ -501,11 +506,12 @@ def render_comparison_plot(data_source, prefix, label_y1, label_y2, allow_noise=
                     y1_min = c2.number_input(f"1段目({label_y1}) Min", value=-0.0005, format="%.5f", key=f"{prefix}_y1n")
                     y2_max = c1.number_input(f"2段目({label_y2}) Max", value=1.0, key=f"{prefix}_y2x")
                     y2_min = c2.number_input(f"2段目({label_y2}) Min", value=0.0, key=f"{prefix}_y2n")
-                    y3_max = c1.number_input("3段目(Noise) Max", value=0.0005, format="%.5f", key=f"{prefix}_y3x")
-                    y3_min = c2.number_input("3段目(Noise) Min", value=-0.0005, format="%.5f", key=f"{prefix}_y3n")
+                    if show_noise:
+                        y3_max = c1.number_input("3段目(Noise) Max", value=0.0005, format="%.5f", key=f"{prefix}_y3x")
+                        y3_min = c2.number_input("3段目(Noise) Min", value=-0.0005, format="%.5f", key=f"{prefix}_y3n")
 
             st.markdown("---")
-            st.markdown("##### 🎨 スタイル設定 (色・太さ・倍率)")
+            st.markdown("##### 🎨 スタイル設定")
             
             default_colors = list(mcolors.TABLEAU_COLORS.values())
             plot_styles = {}
@@ -536,7 +542,6 @@ def render_comparison_plot(data_source, prefix, label_y1, label_y2, allow_noise=
         fig, axes = plt.subplots(layout_rows, 1, sharex=True, figsize=(10, height), 
                                  gridspec_kw={'height_ratios': [1]*layout_rows})
         
-        # axesをリスト化して扱いやすくする
         if layout_rows == 2:
             ax1, ax2 = axes
             ax3 = None
