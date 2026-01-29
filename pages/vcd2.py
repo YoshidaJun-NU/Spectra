@@ -10,7 +10,7 @@ from plotly.subplots import make_subplots
 import matplotlib.colors as mcolors
 
 # ---------------------------------------------------------
-# 関数: データ読み込み (強化版 - エラー自動回避)
+# 関数: データ読み込み (強化版)
 # ---------------------------------------------------------
 def load_spectral_data(uploaded_file, params):
     """
@@ -22,6 +22,8 @@ def load_spectral_data(uploaded_file, params):
         lines = content.splitlines()
         
         # --- 1. JASCO形式 (XYDATA) の自動検出 ---
+        # (params['force_custom'] が True の場合はスキップして設定通りの読み込みを優先させることも可能だが
+        #  基本的にはJASCO形式は自動判定で読む方が安全)
         jasco_skip = 0
         is_jasco = False
         for i, line in enumerate(lines):
@@ -35,26 +37,25 @@ def load_spectral_data(uploaded_file, params):
         # --- 2. JASCO形式読み込み ---
         if is_jasco:
             try:
-                # JASCOは通常タブ区切りだが、スペースの場合もある
                 df = pd.read_csv(io.StringIO(content), skiprows=jasco_skip, sep='\t', header=None, engine='python')
                 if df.shape[1] < 2:
                      df = pd.read_csv(io.StringIO(content), skiprows=jasco_skip, sep='\s+', header=None, engine='python')
             except:
                 pass 
         
-        # --- 3. 汎用読み込み (エラー回避ロジック強化) ---
+        # --- 3. 汎用読み込み ---
         if df is None:
             sep_char = params['sep']
             sep_arg = None if sep_char == 'auto' else sep_char
             comment_arg = params['comment']
             skip_rows = params['skip_rows']
 
-            # 【自動調整】 コメント文字が未指定で、ファイルの先頭が '#' なら自動設定
+            # コメント文字自動設定
             if not comment_arg and lines and lines[0].strip().startswith('#'):
                 comment_arg = '#'
             
             try:
-                # トライ1: 指定設定で読み込み
+                # 指定設定で読み込み
                 df = pd.read_csv(
                     io.StringIO(content), 
                     skiprows=skip_rows, 
@@ -64,7 +65,7 @@ def load_spectral_data(uploaded_file, params):
                     engine='python'
                 )
             except Exception:
-                # トライ2: 区切り文字自動判定に失敗した場合、スペース区切り('\s+')で強制リトライ
+                # 失敗時、区切り文字自動判定(None)でリトライ、もしくはスペース区切りでリトライ
                 if sep_arg is None:
                     try:
                         df = pd.read_csv(
@@ -92,13 +93,11 @@ def load_spectral_data(uploaded_file, params):
                 return df.iloc[:, idx].values
             return np.zeros(len(df))
 
-        # マッピング (0-based)
         col_x_idx = params['cols']['x']
         col_ir_idx = params['cols']['ir']
         col_vcd_idx = params['cols']['vcd']
         col_noise_idx = params['cols']['noise']
 
-        # X列チェック
         if col_x_idx >= df.shape[1]:
              return None, f"指定されたX列({col_x_idx+1}列目)がデータ内に存在しません (全{df.shape[1]}列)"
 
@@ -126,7 +125,7 @@ def load_spectral_data(uploaded_file, params):
         return None, f"読み込み例外: {e}"
 
 # ---------------------------------------------------------
-# 関数: データ結合 (VCDファイル + IRファイル)
+# 関数: データ結合
 # ---------------------------------------------------------
 def merge_vcd_ir_data(vcd_source, ir_source, new_filename):
     x_master = vcd_source['x']
@@ -156,15 +155,6 @@ def merge_vcd_ir_data(vcd_source, ir_source, new_filename):
     }
 
 # ---------------------------------------------------------
-# 関数: Gnuplot用パッケージ作成 (比較用)
-# ---------------------------------------------------------
-def create_gnuplot_package_simple(data_list, x_lim):
-    # シンプルなエクスポート機能 (実装省略も可能だが枠組みだけ維持)
-    if not data_list: return None
-    # (既存のcreate_gnuplot_packageと同様のロジックが必要であればここに記述)
-    return None
-
-# ---------------------------------------------------------
 # メインアプリ
 # ---------------------------------------------------------
 def main():
@@ -173,34 +163,57 @@ def main():
 
     if 'vcd_data' not in st.session_state: st.session_state['vcd_data'] = []
     if 'ld_data' not in st.session_state: st.session_state['ld_data'] = []
-    if 'calc_data' not in st.session_state: st.session_state['calc_data'] = [] # 計算データ用
+    if 'calc_data' not in st.session_state: st.session_state['calc_data'] = []
 
     # ==========================================
-    # 1. サイドバー: データ読み込み設定
+    # 1. サイドバー: データ読み込み設定 (分離)
     # ==========================================
     st.sidebar.header("📂 ファイル読み込み")
 
-    # --- 共通読み込み設定 ---
-    with st.sidebar.expander("⚙️ 読み込み設定 (Text/CSV)", expanded=False):
-        st.caption("JASCO以外のファイルを読む際の列指定など")
-        c_p1, c_p2 = st.columns(2)
-        p_skip = c_p1.number_input("Header Skip Lines", value=0, min_value=0)
-        p_sep_mode = c_p2.selectbox("Separator", ["自動 (Space/Tab)", "カンマ (,)", "タブ (\\t)"])
-        p_comment = st.text_input("Comment Char (e.g. #)", value="")
+    sep_map = {"自動 (Space/Tab)": "auto", "カンマ (,)": ",", "タブ (\\t)": "\t"}
+
+    # --- 実験データ用設定 ---
+    with st.sidebar.expander("⚙️ 実験データ読み込み設定 (非JASCO)", expanded=False):
+        st.caption("※VCD/LD実験データに適用されます")
+        c_e1, c_e2 = st.columns(2)
+        exp_skip = c_e1.number_input("Skip Rows", value=0, min_value=0, key="exp_skip")
+        exp_sep_mode = c_e2.selectbox("Separator", list(sep_map.keys()), key="exp_sep")
+        exp_comment = st.text_input("Comment Char", value="", key="exp_comment")
         
         st.markdown("**列番号 (1始まり)**")
-        c_col1, c_col2 = st.columns(2)
-        col_x = c_col1.number_input("X (波数)", value=1, min_value=1)
-        col_ir = c_col2.number_input("IR/Abs (2nd data)", value=2, min_value=1)
-        col_vcd = c_col1.number_input("VCD/Sig (1st data)", value=3, min_value=1)
-        col_noise = c_col2.number_input("Noise (3rd data)", value=4, min_value=1)
+        ce_c1, ce_c2 = st.columns(2)
+        exp_col_x = ce_c1.number_input("X (波数)", value=1, min_value=1, key="exp_cx")
+        exp_col_ir = ce_c2.number_input("IR/Abs (2)", value=2, min_value=1, key="exp_ci")
+        exp_col_vcd = ce_c1.number_input("VCD/Sig (3)", value=3, min_value=1, key="exp_cv")
+        exp_col_noise = ce_c2.number_input("Noise (4)", value=4, min_value=1, key="exp_cn")
 
-    sep_map = {"自動 (Space/Tab)": "auto", "カンマ (,)": ",", "タブ (\\t)": "\t"}
-    load_params = {
-        "skip_rows": p_skip,
-        "sep": sep_map[p_sep_mode],
-        "comment": p_comment if p_comment else None,
-        "cols": {"x": col_x-1, "ir": col_ir-1, "vcd": col_vcd-1, "noise": col_noise-1}
+    params_exp = {
+        "skip_rows": exp_skip,
+        "sep": sep_map[exp_sep_mode],
+        "comment": exp_comment if exp_comment else None,
+        "cols": {"x": exp_col_x-1, "ir": exp_col_ir-1, "vcd": exp_col_vcd-1, "noise": exp_col_noise-1}
+    }
+
+    # --- 計算データ用設定 ---
+    with st.sidebar.expander("⚙️ 計算データ読み込み設定", expanded=False):
+        st.caption("※計算データ(Calc)に適用されます")
+        c_c1, c_c2 = st.columns(2)
+        calc_skip = c_c1.number_input("Skip Rows", value=0, min_value=0, key="calc_skip")
+        calc_sep_mode = c_c2.selectbox("Separator", list(sep_map.keys()), key="calc_sep")
+        calc_comment = st.text_input("Comment Char", value="#", key="calc_comment") # デフォルトで#を入れる
+        
+        st.markdown("**列番号 (1始まり)**")
+        cc_c1, cc_c2 = st.columns(2)
+        calc_col_x = cc_c1.number_input("X (波数)", value=1, min_value=1, key="calc_cx")
+        calc_col_ir = cc_c2.number_input("IR (2)", value=2, min_value=1, key="calc_ci")
+        calc_col_vcd = cc_c1.number_input("VCD (3)", value=3, min_value=1, key="calc_cv")
+        # 計算データにはノイズ列がないことが多いのでデフォルト4のまま放置
+
+    params_calc = {
+        "skip_rows": calc_skip,
+        "sep": sep_map[calc_sep_mode],
+        "comment": calc_comment if calc_comment else None,
+        "cols": {"x": calc_col_x-1, "ir": calc_col_ir-1, "vcd": calc_col_vcd-1, "noise": 999} # noiseは無効な列にしておく
     }
 
     # --- アップローダー群 ---
@@ -209,7 +222,8 @@ def main():
     if uploaded_vcd:
         for f in uploaded_vcd:
             if not any(d['filename'] == f.name for d in st.session_state['vcd_data']):
-                data, err = load_spectral_data(f, load_params)
+                # 実験用設定を使用
+                data, err = load_spectral_data(f, params_exp)
                 if data: st.session_state['vcd_data'].append(data)
                 else: st.sidebar.error(f"{f.name}: {err}")
 
@@ -217,18 +231,19 @@ def main():
     if uploaded_ld:
         for f in uploaded_ld:
             if not any(d['filename'] == f.name for d in st.session_state['ld_data']):
-                data, err = load_spectral_data(f, load_params)
+                # 実験用設定を使用
+                data, err = load_spectral_data(f, params_exp)
                 if data: st.session_state['ld_data'].append(data)
                 else: st.sidebar.error(f"{f.name}: {err}")
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("2. 計算データ (Calc)")
-    st.sidebar.caption("比較タブで使用します。列設定は上の「読み込み設定」に従います。")
     uploaded_calc = st.sidebar.file_uploader("計算データ (.txt/.csv)", accept_multiple_files=True, key="up_calc")
     if uploaded_calc:
         for f in uploaded_calc:
             if not any(d['filename'] == f.name for d in st.session_state['calc_data']):
-                data, err = load_spectral_data(f, load_params)
+                # 計算用設定を使用
+                data, err = load_spectral_data(f, params_calc)
                 if data: 
                     st.session_state['calc_data'].append(data)
                     st.sidebar.success(f"Calc: {f.name} 読込")
@@ -249,7 +264,7 @@ def main():
     calc_data = st.session_state['calc_data']
 
     # --------------------------------------------------
-    # Tab 1: VCD 個別 (既存)
+    # Tab 1: VCD 個別
     # --------------------------------------------------
     with tab1:
         if not vcd_data:
@@ -263,14 +278,12 @@ def main():
                 sel_d = vcd_data[sel_idx]
             
             with col_opt:
-                # 簡易的なピーク検出設定
                 show_peak = st.checkbox("Peak Picking", value=False)
                 p_th = 0.05
                 if show_peak:
                     p_th = st.slider("Threshold", 0.0, 1.0, 0.05)
 
             if sel_d:
-                # Plotlyによる描画
                 x, ir, vcd = sel_d['x'], sel_d['ir'], sel_d['vcd']
                 
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1,
@@ -284,23 +297,22 @@ def main():
                     fig.add_trace(go.Scatter(x=x[peaks], y=ir[peaks], mode='markers', name='Peaks', marker=dict(color='black', size=8)), row=2, col=1)
 
                 fig.update_layout(height=600, hovermode="x unified")
-                fig.update_xaxes(autorange="reversed", row=2, col=1) # 波数軸反転
+                fig.update_xaxes(autorange="reversed", row=2, col=1)
                 fig.update_xaxes(autorange="reversed", row=1, col=1)
                 st.plotly_chart(fig, use_container_width=True)
 
     # --------------------------------------------------
-    # Tab 2: VCD 比較 (既存)
+    # Tab 2: VCD 比較
     # --------------------------------------------------
     with tab2:
         if not vcd_data:
             st.info("データがありません。")
         else:
             st.subheader("Multi-Spectra Comparison")
-            # 既存のMatplotlib描画ロジックを呼ぶ (省略せずに実装)
-            render_matplotlib_comparison(vcd_data, "vcd", "VCD Signal", "Absorbance")
+            render_matplotlib_comparison(vcd_data, "vcd", "VCD Intensity", "Absorbance")
 
     # --------------------------------------------------
-    # Tab 3: LD 解析 (既存)
+    # Tab 3: LD 解析
     # --------------------------------------------------
     with tab3:
         if not ld_data:
@@ -310,14 +322,13 @@ def main():
             render_matplotlib_comparison(ld_data, "ld", "LD Signal", "Absorbance")
 
     # --------------------------------------------------
-    # Tab 4: 実験 vs 計算 (新規)
+    # Tab 4: 実験 vs 計算
     # --------------------------------------------------
     with tab4:
         st.subheader("🔬 Experimental vs Computational Comparison")
         
         c_exp, c_calc = st.columns(2)
         
-        # 1. データ選択
         with c_exp:
             st.markdown("##### 1. 実験データ (Experimental)")
             if not vcd_data:
@@ -331,7 +342,7 @@ def main():
         with c_calc:
             st.markdown("##### 2. 計算データ (Computational)")
             if not calc_data:
-                st.warning("計算データがありません (サイドバーでCalcファイルを読込)")
+                st.warning("計算データがありません")
                 sel_calc_data = None
             else:
                 calc_names = [d['filename'] for d in calc_data]
@@ -341,15 +352,12 @@ def main():
         st.markdown("---")
 
         if sel_exp_data and sel_calc_data:
-            # 2. パラメータ調整
             with st.expander("🎚️ シミュレーション・フィッティング設定", expanded=True):
                 col_para1, col_para2, col_para3 = st.columns(3)
                 
                 with col_para1:
                     st.markdown("**X軸 (波数) 補正**")
-                    # DFTスケーリング係数 (例: 0.98)
                     scale_freq = st.number_input("Scaling Factor (freq * x)", value=0.980, step=0.001, format="%.4f")
-                    # シフト (例: +10 cm-1)
                     shift_freq = st.number_input("Shift (freq + x)", value=0.0, step=1.0)
                 
                 with col_para2:
@@ -362,37 +370,31 @@ def main():
                     use_dual_axis = st.checkbox("2軸プロット (Dual Y-Axis)", value=True, help="実験値と計算値の桁が違う場合に有効")
                     plot_range = st.slider("表示範囲 (cm-1)", 0, 4000, (800, 2000))
 
-            # 3. データ加工
-            # 実験データ
+            # データ加工
             exp_x = sel_exp_data['x']
             exp_vcd = sel_exp_data['vcd']
             exp_ir = sel_exp_data['ir']
             
-            # 計算データ (補正適用)
-            # x軸は降順/昇順が混在する可能性があるため注意
             raw_calc_x = sel_calc_data['x']
             calc_x = raw_calc_x * scale_freq + shift_freq
             calc_vcd = sel_calc_data['vcd'] * scale_int_vcd
             calc_ir = sel_calc_data['ir'] * scale_int_ir
 
-            # 4. プロット作成 (Plotly)
-            # サブプロット (上: VCD, 下: IR)
+            # Plotly
             fig_cmp = make_subplots(
                 rows=2, cols=1, 
                 shared_xaxes=True, 
                 vertical_spacing=0.1,
-                specs=[[{"secondary_y": True}], [{"secondary_y": True}]], # 両方とも2軸有効
+                specs=[[{"secondary_y": True}], [{"secondary_y": True}]],
                 subplot_titles=("VCD Comparison", "IR Comparison")
             )
 
             # --- VCD Plot ---
-            # 実験 (左軸 or 共通)
             fig_cmp.add_trace(
                 go.Scatter(x=exp_x, y=exp_vcd, name=f"Exp: {sel_exp_data['filename']}", 
                            line=dict(color='blue', width=2)), 
                 row=1, col=1, secondary_y=False
             )
-            # 計算 (右軸 or 左軸)
             fig_cmp.add_trace(
                 go.Scatter(x=calc_x, y=calc_vcd, name=f"Calc: {sel_calc_data['filename']}", 
                            line=dict(color='red', width=1.5, dash='dash')), 
@@ -411,36 +413,22 @@ def main():
                 row=2, col=1, secondary_y=use_dual_axis
             )
 
-            # レイアウト調整
-            fig_cmp.update_layout(
-                height=700, 
-                title_text="Experimental vs Computational",
-                hovermode="x unified"
-            )
+            fig_cmp.update_layout(height=700, hovermode="x unified")
             
-            # X軸範囲設定 (降順にするのが一般的: 2000 -> 800)
+            # X軸範囲設定 (降順)
             fig_cmp.update_xaxes(range=[plot_range[1], plot_range[0]], row=2, col=1, title_text="Wavenumber (cm⁻¹)")
             fig_cmp.update_xaxes(range=[plot_range[1], plot_range[0]], row=1, col=1)
 
-            # 軸ラベル
             fig_cmp.update_yaxes(title_text="Exp Signal", secondary_y=False)
             if use_dual_axis:
                 fig_cmp.update_yaxes(title_text="Calc Signal", secondary_y=True, showgrid=False)
 
             st.plotly_chart(fig_cmp, use_container_width=True)
-            
-            st.info("""
-            **ヒント**:
-            - 計算データのピーク位置がずれている場合は、**Scaling Factor** (0.96-0.98付近) や **Shift** を調整してください。
-            - 強度が大きく異なる場合は **Intensity Scale** を変更するか、**2軸プロット** を有効にしてください。
-            """)
 
 # ---------------------------------------------------------
-# Matplotlib 比較描画 (Tab 2, 3用)
+# Matplotlib 比較描画
 # ---------------------------------------------------------
 def render_matplotlib_comparison(data_source, prefix, label_y1, label_y2):
-    """既存のMatplotlib描画ロジック"""
-    # UI部分
     c_sel, c_st = st.columns([1, 2])
     with c_sel:
         all_f = [d['filename'] for d in data_source]
@@ -457,8 +445,6 @@ def render_matplotlib_comparison(data_source, prefix, label_y1, label_y2):
             y1_lim = (col1.number_input("Y1 Min", value=-0.001, format="%.5f"), col1.number_input("Y1 Max", value=0.001, format="%.5f"))
             y2_lim = (col2.number_input("Y2 Min", value=0.0), col2.number_input("Y2 Max", value=1.5))
             x_lim = st.slider("X Range", 0, 4000, (800, 2000), key=f"{prefix}_xlim")
-            
-            # 色設定などを簡易化して実装
             submitted = st.form_submit_button("Update Plot")
 
     if submitted or target:
@@ -467,10 +453,10 @@ def render_matplotlib_comparison(data_source, prefix, label_y1, label_y2):
         
         for i, d in enumerate(target):
             c = colors[i % len(colors)]
-            ax1.plot(d['x'], d['vcd'] if prefix=='vcd' else d['vcd'], label=d['filename'], color=c, linewidth=1.2) # ldデータも'vcd'キーに入れている場合
+            ax1.plot(d['x'], d['vcd'] if prefix=='vcd' else d['vcd'], label=d['filename'], color=c, linewidth=1.2)
             ax2.plot(d['x'], d['ir'], color=c, linewidth=1.2)
 
-        ax1.set_xlim(x_lim[1], x_lim[0]) # Reverse X
+        ax1.set_xlim(x_lim[1], x_lim[0])
         ax1.axhline(0, color='black', lw=0.5)
         ax1.set_ylabel(label_y1)
         ax1.legend(fontsize='small')
