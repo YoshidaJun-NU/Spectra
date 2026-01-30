@@ -158,7 +158,13 @@ def create_gnuplot_package(data_list, settings_dict, x_lim, y_labels, show_noise
     
     current_col = 2
     
-    dt_map = {'solid': 1, 'dash': 2, 'dot': 3, 'dashdot': 4}
+    # 拡張マッピング: Matplotlibの記号とPlotlyの単語両方に対応
+    dt_map = {
+        'solid': 1, '-': 1,
+        'dash': 2, 'dashed': 2, '--': 2,
+        'dot': 3, 'dotted': 3, ':': 3,
+        'dashdot': 4, '-.': 4
+    }
 
     for d in data_list:
         fname = d['filename']
@@ -166,7 +172,9 @@ def create_gnuplot_package(data_list, settings_dict, x_lim, y_labels, show_noise
         
         c = st.get('color', 'black')
         w = st.get('width', 2.0)
-        dt = dt_map.get(st.get('dash', 'solid'), 1)
+        # Line Styleの取得と変換
+        ls_key = st.get('dash', 'solid')
+        dt = dt_map.get(ls_key, 1)
         
         v_s, v_o = st.get('vcd_scale', 1.0), st.get('vcd_offset', 0.0)
         i_s, i_o = st.get('ir_scale', 1.0), st.get('ir_offset', 0.0)
@@ -314,7 +322,9 @@ def render_matplotlib_comparison_advanced(data_source, prefix, label_y1, label_y
                         c_s1, c_s2, c_s3 = st.columns(3)
                         p_color = c_s1.color_picker("Color", value=def_c, key=f"{prefix}_c_{i}")
                         p_width = c_s2.number_input("Width", value=1.5, step=0.5, key=f"{prefix}_w_{i}")
-                        p_style = c_s3.selectbox("Line Style", ["solid", "dash", "dot", "dashdot"], index=0, key=f"{prefix}_ls_{i}")
+                        
+                        # 修正: Matplotlibで有効なスタイル文字列に変更
+                        p_style = c_s3.selectbox("Line Style", ["-", "--", ":", "-."], index=0, key=f"{prefix}_ls_{i}")
                         
                         c_o1, c_o2, c_o3, c_o4 = st.columns(4)
                         v_scale = c_o1.number_input(f"{label_y1} x", value=1.0, step=0.1, key=f"{prefix}_vs_{i}")
@@ -322,6 +332,7 @@ def render_matplotlib_comparison_advanced(data_source, prefix, label_y1, label_y
                         i_scale = c_o3.number_input(f"{label_y2} x", value=1.0, step=0.1, key=f"{prefix}_is_{i}")
                         i_offset = c_o4.number_input(f"{label_y2} +", value=0.0, step=0.1, key=f"{prefix}_io_{i}")
                         
+                        # キー名を 'dash' で統一して Gnuplot 用関数に渡す
                         plot_settings[fname] = {
                             'color': p_color, 'width': p_width, 'dash': p_style,
                             'vcd_scale': v_scale, 'vcd_offset': v_offset,
@@ -355,7 +366,8 @@ def render_matplotlib_comparison_advanced(data_source, prefix, label_y1, label_y
             
             color = stt.get('color', 'black')
             width = stt.get('width', 1.5)
-            ls = stt.get('dash', 'solid')
+            # Matplotlib は記号をそのまま受け付ける
+            ls = stt.get('dash', '-')
             
             v_s, v_o = stt.get('vcd_scale', 1.0), stt.get('vcd_offset', 0.0)
             i_s, i_o = stt.get('ir_scale', 1.0), stt.get('ir_offset', 0.0)
@@ -416,6 +428,14 @@ def create_gnuplot_comparison_package(exp_list, calc_list, style_dict, x_lim):
     plot_cmds_ir = []
     current_col = 2
     
+    # 拡張マッピング
+    dt_map = {
+        'solid': 1, '-': 1,
+        'dash': 2, 'dashed': 2, '--': 2,
+        'dot': 3, 'dotted': 3, ':': 3,
+        'dashdot': 4, '-.': 4
+    }
+    
     def process_dataset(data_list, group_name):
         nonlocal current_col
         cmds_vcd = []
@@ -425,8 +445,9 @@ def create_gnuplot_comparison_package(exp_list, calc_list, style_dict, x_lim):
             style = style_dict.get(fname, {'color': 'black', 'width': 2.0, 'dash': 'solid'})
             color = style['color']
             width = style['width']
-            dt_map = {'solid': 1, 'dash': 2, 'dot': 3, 'dashdot': 4}
-            dt = dt_map.get(style['dash'], 1)
+            # キーが 'dash' だったり 'ls' だったりするので両方チェック
+            ls_key = style.get('dash') or style.get('ls') or 'solid'
+            dt = dt_map.get(ls_key, 1)
             
             ir_interp = np.interp(common_x, d['x'][::-1], d['ir'][::-1])
             vcd_interp = np.interp(common_x, d['x'][::-1], d['vcd'][::-1])
