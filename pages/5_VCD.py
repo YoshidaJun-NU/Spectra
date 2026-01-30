@@ -404,9 +404,9 @@ def render_matplotlib_comparison_advanced(data_source, prefix, label_y1, label_y
         st.info("👆 設定を変更し、「グラフを更新」ボタンを押してプロットしてください。")
 
 # ---------------------------------------------------------
-# 関数: Gnuplot用パッケージ作成 (比較用) [Tab 4用]
+# 関数: Gnuplot用パッケージ作成 (比較用) [Tab 4/5用]
 # ---------------------------------------------------------
-def create_gnuplot_comparison_package(exp_list, calc_list, style_dict, x_lim, use_dual_axis):
+def create_gnuplot_comparison_package(exp_list, calc_list, style_dict, x_lim):
     if not exp_list and not calc_list: return None
     all_x = []
     for d in exp_list + calc_list: all_x.extend(d['x'])
@@ -435,7 +435,6 @@ def create_gnuplot_comparison_package(exp_list, calc_list, style_dict, x_lim, us
             df_out[f"{safe_name}_VCD"] = vcd_interp
             title = fname.replace('_', '\\_')
             
-            # 2段表示の場合、axes指定は不要
             cmds_vcd.append(f"'data.dat' u 1:{current_col+1} w l lc rgb '{color}' lw {width} dt {dt} title '{title}'")
             cmds_ir.append(f"'data.dat' u 1:{current_col} w l lc rgb '{color}' lw {width} dt {dt} title '{title}'")
             current_col += 2
@@ -496,9 +495,9 @@ def main():
     if 'ld_data' not in st.session_state: st.session_state['ld_data'] = []
     if 'calc_data' not in st.session_state: st.session_state['calc_data'] = []
     
-    # セッション状態の初期化 (再プロット用)
-    if 'tab4_plot_trigger' not in st.session_state:
-        st.session_state['tab4_plot_trigger'] = False
+    # セッション状態の初期化
+    if 'tab4_plot_trigger' not in st.session_state: st.session_state['tab4_plot_trigger'] = False
+    if 'tab5_plot_trigger' not in st.session_state: st.session_state['tab5_plot_trigger'] = False
 
     # ==========================================
     # 1. サイドバー: データ読み込み設定
@@ -589,11 +588,12 @@ def main():
     # ==========================================
     # タブ構成
     # ==========================================
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 VCD: 個別解析", 
         "📈 VCD: 比較", 
         "📏 LD解析", 
-        "🔬 実験 vs 計算"
+        "🔬 Exp vs Calc (Interactive)",
+        "🔬 Exp vs Calc (Matplotlib)"
     ])
 
     vcd_data = st.session_state['vcd_data']
@@ -661,9 +661,9 @@ def main():
             st.subheader("LD Analysis")
             render_matplotlib_comparison_advanced(ld_data, "ld", "LD Signal", "Absorbance", allow_noise=False)
 
-    # Tab 4: 実験 vs 計算 (修正: 上下2段 + 手動Y軸範囲 + Calc倍率微調整 + Offset + X軸数値入力)
+    # Tab 4: 実験 vs 計算 (Interactive)
     with tab4:
-        st.subheader("🔬 Experimental vs Computational Comparison")
+        st.subheader("🔬 Exp vs Calc (Interactive)")
         c_exp, c_calc = st.columns(2)
         with c_exp:
             st.markdown("##### 1. 実験データ (Exp)")
@@ -672,7 +672,7 @@ def main():
                 target_exp_data = []
             else:
                 exp_names = [d['filename'] for d in vcd_data]
-                sel_exp_names = st.multiselect("ファイル選択", exp_names, default=[exp_names[0]], key="tv_exp_multi")
+                sel_exp_names = st.multiselect("ファイル選択", exp_names, default=[exp_names[0]], key="t4_exp_multi")
                 target_exp_data = [d for d in vcd_data if d['filename'] in sel_exp_names]
         with c_calc:
             st.markdown("##### 2. 計算データ (Calc)")
@@ -681,59 +681,52 @@ def main():
                 target_calc_data = []
             else:
                 calc_names = [d['filename'] for d in calc_data]
-                sel_calc_names = st.multiselect("ファイル選択", calc_names, default=[calc_names[0]] if calc_names else None, key="tv_calc_multi")
+                sel_calc_names = st.multiselect("ファイル選択", calc_names, default=[calc_names[0]] if calc_names else None, key="t4_calc_multi")
                 target_calc_data = [d for d in calc_data if d['filename'] in sel_calc_names]
 
         st.markdown("---")
 
         if target_exp_data or target_calc_data:
-            # フォーム開始 (再プロット用)
             with st.form("tab4_form"):
-                with st.expander("🎚️ パラメータ & 🎨 スタイル設定", expanded=True):
+                with st.expander("🎚️ パラメータ設定", expanded=True):
                     col_para1, col_para2, col_para3 = st.columns(3)
                     with col_para1:
-                        st.markdown("**X軸 (波数) 補正 [Calcのみ]**")
-                        scale_freq = st.number_input("Scaling Factor", value=0.980, step=0.001, format="%.4f")
-                        shift_freq = st.number_input("Shift (+/-)", value=0.0, step=1.0)
+                        st.markdown("**X軸 (波数) 補正 [Calc]**")
+                        scale_freq = st.number_input("Scaling Factor", value=0.980, step=0.001, format="%.4f", key="t4_sf")
+                        shift_freq = st.number_input("Shift (+/-)", value=0.0, step=1.0, key="t4_sh")
                     with col_para2:
-                        st.markdown("**Y軸 (強度) 操作 [Calcのみ]**")
-                        # 0.00000001 (1e-8) まで設定可能に変更、フォーマットも%.8fへ
-                        scale_int_vcd = st.number_input("VCD Scale (x)", value=1.0, step=1e-8, format="%.8f", help="1e-5 のような指数表記も可")
-                        scale_int_ir = st.number_input("IR Scale (x)", value=1.0, step=1e-8, format="%.8f", help="1e-5 のような指数表記も可")
-                        shift_int_vcd = st.number_input("VCD Offset (+)", value=0.0, step=1e-8, format="%.8f")
-                        shift_int_ir = st.number_input("IR Offset (+)", value=0.0, step=1e-8, format="%.8f")
+                        st.markdown("**Y軸 (強度) 操作 [Calc]**")
+                        scale_int_vcd = st.number_input("VCD Scale (x)", value=1.0, step=1e-8, format="%.8f", help="1e-5等も可", key="t4_vs")
+                        scale_int_ir = st.number_input("IR Scale (x)", value=1.0, step=1e-8, format="%.8f", help="1e-5等も可", key="t4_is")
+                        shift_int_vcd = st.number_input("VCD Offset (+)", value=0.0, step=1e-8, format="%.8f", key="t4_vo")
+                        shift_int_ir = st.number_input("IR Offset (+)", value=0.0, step=1e-8, format="%.8f", key="t4_io")
                     with col_para3:
                         st.markdown("**表示設定 (X軸)**")
-                        use_manual_x = st.checkbox("範囲を数値で指定する", value=False, key="t4_man_x")
+                        use_manual_x = st.checkbox("数値指定", value=False, key="t4_man_x")
                         if use_manual_x:
                             c_xh, c_xl = st.columns(2)
-                            x_max_in = c_xh.number_input("Max (左端)", value=2000.0, step=50.0, key="t4_in_xmax")
-                            x_min_in = c_xl.number_input("Min (右端)", value=800.0, step=50.0, key="t4_in_xmin")
+                            x_max_in = c_xh.number_input("Max (Left)", value=2000.0, step=50.0, key="t4_xm")
+                            x_min_in = c_xl.number_input("Min (Right)", value=800.0, step=50.0, key="t4_xn")
                             plot_range = (x_min_in, x_max_in)
                         else:
-                            plot_range = st.slider("スライダー", 0, 4000, (800, 2000))
+                            plot_range = st.slider("Slider", 0, 4000, (800, 2000), key="t4_sl")
                     
-                    # Manual Y Range
                     st.markdown("---")
-                    st.markdown("###### Y軸 手動範囲設定 (全データ適用)")
-                    use_manual_y = st.checkbox("Y軸の範囲を手動で固定する", value=False, key="t4_manual_y")
-                    
+                    st.markdown("**Y軸 手動範囲設定 (全データ)**")
+                    use_manual_y = st.checkbox("Y軸固定", value=False, key="t4_manual_y")
                     t4_vcd_min, t4_vcd_max = None, None
                     t4_ir_min, t4_ir_max = None, None
-                    
                     if use_manual_y:
                         c_my1, c_my2 = st.columns(2)
                         with c_my1:
-                            st.caption("VCD Range (上段)")
                             t4_vcd_max = st.number_input("VCD Max", value=0.0001, format="%.6f", key="t4_vmx")
                             t4_vcd_min = st.number_input("VCD Min", value=-0.0001, format="%.6f", key="t4_vmn")
                         with c_my2:
-                            st.caption("IR Range (下段)")
                             t4_ir_max = st.number_input("IR Max", value=1.0, format="%.2f", key="t4_imx")
                             t4_ir_min = st.number_input("IR Min", value=0.0, format="%.2f", key="t4_imn")
                     
                     st.markdown("---")
-                    st.markdown("##### グラフスタイル詳細設定")
+                    st.markdown("**スタイル**")
                     style_dict = {} 
                     default_colors = pc.qualitative.Plotly
                     
@@ -745,9 +738,9 @@ def main():
                             def_c = default_colors[i % len(default_colors)]
                             with cols_e[i % 3]:
                                 st.markdown(f"**{fname}**")
-                                c = st.color_picker("Color", def_c, key=f"ec_{fname}")
-                                w = st.number_input("Width", 1.0, 5.0, 2.0, 0.5, key=f"ew_{fname}")
-                                s = st.selectbox("Style", ["solid", "dash", "dot", "dashdot"], index=0, key=f"es_{fname}")
+                                c = st.color_picker("Col", def_c, key=f"t4_ec_{i}")
+                                w = st.number_input("Wid", 1.0, 5.0, 2.0, 0.5, key=f"t4_ew_{i}")
+                                s = st.selectbox("Sty", ["solid", "dash", "dot", "dashdot"], index=0, key=f"t4_es_{i}")
                                 style_dict[fname] = {'color': c, 'width': w, 'dash': s}
                     
                     if target_calc_data:
@@ -759,68 +752,48 @@ def main():
                             def_c = default_colors[(offset + i) % len(default_colors)]
                             with cols_c[i % 3]:
                                 st.markdown(f"**{fname}**")
-                                c = st.color_picker("Color", def_c, key=f"cc_{fname}")
-                                w = st.number_input("Width", 1.0, 5.0, 1.5, 0.5, key=f"cw_{fname}")
-                                s = st.selectbox("Style", ["solid", "dash", "dot", "dashdot"], index=1, key=f"cs_{fname}")
+                                c = st.color_picker("Col", def_c, key=f"t4_cc_{i}")
+                                w = st.number_input("Width", 1.0, 5.0, 1.5, 0.5, key=f"t4_cw_{i}")
+                                s = st.selectbox("Style", ["solid", "dash", "dot", "dashdot"], index=1, key=f"t4_cs_{i}")
                                 style_dict[fname] = {'color': c, 'width': w, 'dash': s}
                 
-                # Submit Button
-                submitted = st.form_submit_button("グラフを更新 (再プロット)")
-                if submitted:
+                if st.form_submit_button("グラフを更新 (再プロット)"):
                     st.session_state['tab4_plot_trigger'] = True
 
-            # --------------------------------------------------------
-            # プロット作成: 上下2段 (Row1: VCD, Row2: IR)
-            # --------------------------------------------------------
             if st.session_state['tab4_plot_trigger']:
                 fig_cmp = make_subplots(
-                    rows=2, cols=1, 
-                    shared_xaxes=True, 
-                    vertical_spacing=0.1,
+                    rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1,
                     subplot_titles=("VCD Comparison", "IR Comparison")
                 )
                 
                 processed_calc_data = []
 
-                # 実験データ
                 for d in target_exp_data:
                     style = style_dict.get(d['filename'], {'color':'black', 'width':1, 'dash':'solid'})
-                    # VCD -> Row 1
                     fig_cmp.add_trace(go.Scatter(x=d['x'], y=d['vcd'], name=f"Exp: {d['filename']}", 
-                                                 line=dict(color=style['color'], width=style['width'], dash=style['dash'])), 
-                                      row=1, col=1)
-                    # IR -> Row 2
+                                                 line=dict(color=style['color'], width=style['width'], dash=style['dash'])), row=1, col=1)
                     fig_cmp.add_trace(go.Scatter(x=d['x'], y=d['ir'], name=f"Exp IR: {d['filename']}", 
-                                                 line=dict(color=style['color'], width=style['width'], dash=style['dash']), showlegend=False), 
-                                      row=2, col=1)
+                                                 line=dict(color=style['color'], width=style['width'], dash=style['dash']), showlegend=False), row=2, col=1)
 
-                # 計算データ
                 for d in target_calc_data:
                     style = style_dict.get(d['filename'], {'color':'red', 'width':1, 'dash':'solid'})
                     calc_x = d['x'] * scale_freq + shift_freq
-                    # Scale & Offsetを適用
                     calc_vcd = d['vcd'] * scale_int_vcd + shift_int_vcd
                     calc_ir = d['ir'] * scale_int_ir + shift_int_ir
                     processed_calc_data.append({'filename': d['filename'], 'x': calc_x, 'vcd': calc_vcd, 'ir': calc_ir})
 
-                    # VCD -> Row 1
                     fig_cmp.add_trace(go.Scatter(x=calc_x, y=calc_vcd, name=f"Calc: {d['filename']}", 
-                                                 line=dict(color=style['color'], width=style['width'], dash=style['dash'])), 
-                                      row=1, col=1)
-                    # IR -> Row 2
+                                                 line=dict(color=style['color'], width=style['width'], dash=style['dash'])), row=1, col=1)
                     fig_cmp.add_trace(go.Scatter(x=calc_x, y=calc_ir, name=f"Calc IR: {d['filename']}", 
-                                                 line=dict(color=style['color'], width=style['width'], dash=style['dash']), showlegend=False), 
-                                      row=2, col=1)
+                                                 line=dict(color=style['color'], width=style['width'], dash=style['dash']), showlegend=False), row=2, col=1)
 
                 fig_cmp.update_layout(height=700, hovermode="x unified")
                 fig_cmp.update_xaxes(range=[plot_range[1], plot_range[0]], row=2, col=1, title_text="Wavenumber (cm⁻¹)")
                 fig_cmp.update_xaxes(range=[plot_range[1], plot_range[0]], row=1, col=1)
                 
-                # 軸ラベル
                 fig_cmp.update_yaxes(title_text="VCD Intensity", row=1, col=1)
                 fig_cmp.update_yaxes(title_text="Absorbance", row=2, col=1)
                 
-                # 手動Y軸設定
                 if use_manual_y:
                     if t4_vcd_min is not None and t4_vcd_max is not None:
                         fig_cmp.update_yaxes(range=[t4_vcd_min, t4_vcd_max], row=1, col=1)
@@ -831,14 +804,165 @@ def main():
                 
                 st.markdown("---")
                 col_dl, _ = st.columns([1, 2])
-                # Gnuplotパッケージ作成 (use_dual_axis=Falseで渡す)
                 zip_dat = create_gnuplot_comparison_package(
-                    target_exp_data, processed_calc_data, style_dict, plot_range, use_dual_axis=False
+                    target_exp_data, processed_calc_data, style_dict, plot_range
                 )
                 if zip_dat:
                     col_dl.download_button("💾 Gnuplotデータ (.zip) を保存", zip_dat, "comparison_gnuplot.zip", "application/zip")
             else:
                 st.info("👆 設定を変更し、「グラフを更新」ボタンを押してプロットしてください。")
+
+    # Tab 5: 実験 vs 計算 (Matplotlib) - NEW!
+    with tab5:
+        st.subheader("🔬 Exp vs Calc (Matplotlib High-Quality)")
+        
+        c_exp5, c_calc5 = st.columns(2)
+        with c_exp5:
+            st.markdown("##### 1. 実験データ (Exp)")
+            if not vcd_data:
+                st.warning("実験データなし")
+                t5_target_exp = []
+            else:
+                exp_names = [d['filename'] for d in vcd_data]
+                t5_sel_exp = st.multiselect("ファイル選択", exp_names, default=[exp_names[0]], key="t5_exp_m")
+                t5_target_exp = [d for d in vcd_data if d['filename'] in t5_sel_exp]
+        
+        with c_calc5:
+            st.markdown("##### 2. 計算データ (Calc)")
+            if not calc_data:
+                st.warning("計算データなし")
+                t5_target_calc = []
+            else:
+                calc_names = [d['filename'] for d in calc_data]
+                t5_sel_calc = st.multiselect("ファイル選択", calc_names, default=[calc_names[0]] if calc_names else None, key="t5_calc_m")
+                t5_target_calc = [d for d in calc_data if d['filename'] in t5_sel_calc]
+
+        st.markdown("---")
+
+        if t5_target_exp or t5_target_calc:
+            with st.expander("📊 グラフ描画設定 (Matplotlib)", expanded=True):
+                with st.form("tab5_form"):
+                    # Parameter Settings (Same as Tab 4)
+                    st.markdown("###### 計算データ補正 (Calc Params)")
+                    c_p1, c_p2 = st.columns(2)
+                    with c_p1:
+                        t5_scale_freq = st.number_input("Freq Scale", 0.980, step=0.001, format="%.4f", key="t5_sf")
+                        t5_shift_freq = st.number_input("Freq Shift", 0.0, step=1.0, key="t5_sh")
+                    with c_p2:
+                        t5_scale_vcd = st.number_input("VCD Scale", 1.0, step=1e-8, format="%.8f", key="t5_vs")
+                        t5_scale_ir = st.number_input("IR Scale", 1.0, step=1e-8, format="%.8f", key="t5_is")
+                        t5_off_vcd = st.number_input("VCD Offset", 0.0, step=1e-8, format="%.8f", key="t5_vo")
+                        t5_off_ir = st.number_input("IR Offset", 0.0, step=1e-8, format="%.8f", key="t5_io")
+
+                    st.markdown("---")
+                    st.markdown("###### 表示設定 (Appearance)")
+                    # Matplotlib specific settings
+                    c_app1, c_app2, c_app3 = st.columns(3)
+                    with c_app1:
+                        st.caption("Axis Range")
+                        t5_xmax = st.number_input("X Left", 2000.0, key="t5_xl")
+                        t5_xmin = st.number_input("X Right", 800.0, key="t5_xr")
+                    with c_app2:
+                        st.caption("Font & Legend")
+                        t5_fontsize = st.number_input("Font Size", 12, 24, 14, key="t5_fs")
+                        t5_fontcolor = st.color_picker("Font Color", "#000000", key="t5_fc")
+                        t5_show_legend = st.checkbox("Show Legend", True, key="t5_leg")
+                    with c_app3:
+                        st.caption("Grid")
+                        t5_show_grid = st.checkbox("Show Grid", False, key="t5_grid")
+                        t5_grid_width = st.number_input("Grid Width", 0.5, 3.0, 0.5, 0.1, key="t5_gw")
+
+                    # Manual Y Range
+                    st.markdown("---")
+                    t5_man_y = st.checkbox("Y軸範囲固定 (Manual Y)", False, key="t5_my")
+                    t5_vcd_min, t5_vcd_max = None, None
+                    t5_ir_min, t5_ir_max = None, None
+                    if t5_man_y:
+                        c_y1, c_y2 = st.columns(2)
+                        with c_y1:
+                            t5_vcd_max = st.number_input("VCD Max", value=0.0001, format="%.6f", key="t5_vmx")
+                            t5_vcd_min = st.number_input("VCD Min", value=-0.0001, format="%.6f", key="t5_vmn")
+                        with c_y2:
+                            t5_ir_max = st.number_input("IR Max", value=1.0, format="%.2f", key="t5_imx")
+                            t5_ir_min = st.number_input("IR Min", value=0.0, format="%.2f", key="t5_imn")
+
+                    # Styles
+                    st.markdown("---")
+                    st.markdown("###### Lines Style")
+                    t5_styles = {}
+                    default_colors = list(mcolors.TABLEAU_COLORS.values())
+                    
+                    if t5_target_exp:
+                        st.caption("Exp Data")
+                        cols_e = st.columns(3)
+                        for i, d in enumerate(t5_target_exp):
+                            fname = d['filename']
+                            def_c = default_colors[i % len(default_colors)]
+                            with cols_e[i % 3]:
+                                st.markdown(f"**{fname}**")
+                                c = st.color_picker("Col", def_c, key=f"t5_ec_{i}")
+                                w = st.number_input("Wid", 0.5, 5.0, 1.5, 0.5, key=f"t5_ew_{i}")
+                                ls = st.selectbox("Line", ["-", "--", "-.", ":"], 0, key=f"t5_el_{i}")
+                                t5_styles[fname] = {'color': c, 'width': w, 'ls': ls}
+                    
+                    if t5_target_calc:
+                        st.caption("Calc Data")
+                        cols_c = st.columns(3)
+                        offset = len(t5_target_exp)
+                        for i, d in enumerate(t5_target_calc):
+                            fname = d['filename']
+                            def_c = default_colors[(offset + i) % len(default_colors)]
+                            with cols_c[i % 3]:
+                                st.markdown(f"**{fname}**")
+                                c = st.color_picker("Col", def_c, key=f"t5_cc_{i}")
+                                w = st.number_input("Width", 0.5, 5.0, 1.5, 0.5, key=f"t5_cw_{i}")
+                                ls = st.selectbox("Line", ["-", "--", "-.", ":"], 1, key=f"t5_cl_{i}")
+                                t5_styles[fname] = {'color': c, 'width': w, 'ls': ls}
+
+                    if st.form_submit_button("グラフ作成 (Render)"):
+                        st.session_state['tab5_plot_trigger'] = True
+
+            if st.session_state['tab5_plot_trigger']:
+                # Matplotlib Plotting
+                plt.rcParams.update({'font.size': t5_fontsize, 'text.color': t5_fontcolor, 'axes.labelcolor': t5_fontcolor, 'xtick.color': t5_fontcolor, 'ytick.color': t5_fontcolor})
+                fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(8, 10), gridspec_kw={'height_ratios': [1, 1]})
+                plt.subplots_adjust(hspace=0.1)
+
+                # Exp Plot
+                for d in t5_target_exp:
+                    stt = t5_styles[d['filename']]
+                    ax1.plot(d['x'], d['vcd'], label=f"Exp: {d['filename']}", color=stt['color'], lw=stt['width'], linestyle=stt['ls'])
+                    ax2.plot(d['x'], d['ir'], label=f"Exp: {d['filename']}", color=stt['color'], lw=stt['width'], linestyle=stt['ls'])
+
+                # Calc Plot
+                for d in t5_target_calc:
+                    stt = t5_styles[d['filename']]
+                    cx = d['x'] * t5_scale_freq + t5_shift_freq
+                    cv = d['vcd'] * t5_scale_vcd + t5_off_vcd
+                    ci = d['ir'] * t5_scale_ir + t5_off_ir
+                    ax1.plot(cx, cv, label=f"Calc: {d['filename']}", color=stt['color'], lw=stt['width'], linestyle=stt['ls'])
+                    ax2.plot(cx, ci, label=f"Calc: {d['filename']}", color=stt['color'], lw=stt['width'], linestyle=stt['ls'])
+
+                # Settings
+                ax1.set_ylabel("VCD Intensity")
+                ax1.axhline(0, color='black', linewidth=0.8)
+                ax1.set_xlim(t5_xmax, t5_xmin)
+                if t5_man_y: ax1.set_ylim(t5_vcd_min, t5_vcd_max)
+                if t5_show_grid: ax1.grid(True, linewidth=t5_grid_width)
+                if t5_show_legend: ax1.legend(loc='upper right', fontsize=t5_fontsize-2, framealpha=0.5)
+
+                ax2.set_ylabel("Absorbance")
+                ax2.set_xlabel("Wavenumber ($cm^{-1}$)")
+                if t5_man_y: ax2.set_ylim(t5_ir_min, t5_ir_max)
+                if t5_show_grid: ax2.grid(True, linewidth=t5_grid_width)
+                
+                st.pyplot(fig)
+
+                # Download
+                buf = io.BytesIO()
+                fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+                buf.seek(0)
+                st.download_button("画像保存 (High-Res PNG)", buf, "matplotlib_plot.png", "image/png")
 
 if __name__ == "__main__":
     main()
