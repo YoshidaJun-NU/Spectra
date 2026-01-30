@@ -661,7 +661,7 @@ def main():
             st.subheader("LD Analysis")
             render_matplotlib_comparison_advanced(ld_data, "ld", "LD Signal", "Absorbance", allow_noise=False)
 
-    # Tab 4: 実験 vs 計算 (修正: 上下2段 + 手動Y軸範囲 + Calc倍率微調整)
+    # Tab 4: 実験 vs 計算 (修正: 上下2段 + 手動Y軸範囲 + Calc倍率微調整 + Offset + X軸数値入力)
     with tab4:
         st.subheader("🔬 Experimental vs Computational Comparison")
         c_exp, c_calc = st.columns(2)
@@ -696,13 +696,22 @@ def main():
                         scale_freq = st.number_input("Scaling Factor", value=0.980, step=0.001, format="%.4f")
                         shift_freq = st.number_input("Shift (+/-)", value=0.0, step=1.0)
                     with col_para2:
-                        st.markdown("**Y軸 (強度) 倍率 [Calcのみ]**")
-                        # 修正: 0.00000001 (1e-8) まで設定可能に & フォーマット変更
-                        scale_int_vcd = st.number_input("VCD Scale", value=1.0, step=1e-8, format="%.8f", help="1e-5 (0.00001) のような指数表記も入力可能です")
-                        scale_int_ir = st.number_input("IR Scale", value=1.0, step=1e-8, format="%.8f", help="1e-5 (0.00001) のような指数表記も入力可能です")
+                        st.markdown("**Y軸 (強度) 操作 [Calcのみ]**")
+                        # 0.00000001 (1e-8) まで設定可能に変更、フォーマットも%.8fへ
+                        scale_int_vcd = st.number_input("VCD Scale (x)", value=1.0, step=1e-8, format="%.8f", help="1e-5 のような指数表記も可")
+                        scale_int_ir = st.number_input("IR Scale (x)", value=1.0, step=1e-8, format="%.8f", help="1e-5 のような指数表記も可")
+                        shift_int_vcd = st.number_input("VCD Offset (+)", value=0.0, step=1e-8, format="%.8f")
+                        shift_int_ir = st.number_input("IR Offset (+)", value=0.0, step=1e-8, format="%.8f")
                     with col_para3:
-                        st.markdown("**表示設定**")
-                        plot_range = st.slider("表示範囲 (cm-1)", 0, 4000, (800, 2000))
+                        st.markdown("**表示設定 (X軸)**")
+                        use_manual_x = st.checkbox("範囲を数値で指定する", value=False, key="t4_man_x")
+                        if use_manual_x:
+                            c_xh, c_xl = st.columns(2)
+                            x_max_in = c_xh.number_input("Max (左端)", value=2000.0, step=50.0, key="t4_in_xmax")
+                            x_min_in = c_xl.number_input("Min (右端)", value=800.0, step=50.0, key="t4_in_xmin")
+                            plot_range = (x_min_in, x_max_in)
+                        else:
+                            plot_range = st.slider("スライダー", 0, 4000, (800, 2000))
                     
                     # Manual Y Range
                     st.markdown("---")
@@ -789,8 +798,9 @@ def main():
                 for d in target_calc_data:
                     style = style_dict.get(d['filename'], {'color':'red', 'width':1, 'dash':'solid'})
                     calc_x = d['x'] * scale_freq + shift_freq
-                    calc_vcd = d['vcd'] * scale_int_vcd
-                    calc_ir = d['ir'] * scale_int_ir
+                    # Scale & Offsetを適用
+                    calc_vcd = d['vcd'] * scale_int_vcd + shift_int_vcd
+                    calc_ir = d['ir'] * scale_int_ir + shift_int_ir
                     processed_calc_data.append({'filename': d['filename'], 'x': calc_x, 'vcd': calc_vcd, 'ir': calc_ir})
 
                     # VCD -> Row 1
