@@ -144,11 +144,6 @@ def merge_vcd_ir_data(vcd_source, ir_source, new_filename):
 # 関数: Gnuplot用パッケージ作成 (汎用)
 # ---------------------------------------------------------
 def create_gnuplot_package(data_list, settings_dict, x_lim, y_labels, show_noise=False):
-    """
-    data_list: データ辞書のリスト
-    settings_dict: ファイル名をキーとした設定辞書
-    y_labels: (Label1, Label2, Label3)
-    """
     if not data_list: return None
     
     all_x = []
@@ -169,19 +164,16 @@ def create_gnuplot_package(data_list, settings_dict, x_lim, y_labels, show_noise
         fname = d['filename']
         st = settings_dict.get(fname, {})
         
-        # 設定値の取得 (デフォルト値付き)
         c = st.get('color', 'black')
         w = st.get('width', 2.0)
         dt = dt_map.get(st.get('dash', 'solid'), 1)
         
-        # Scale/Offset適用
         v_s, v_o = st.get('vcd_scale', 1.0), st.get('vcd_offset', 0.0)
         i_s, i_o = st.get('ir_scale', 1.0), st.get('ir_offset', 0.0)
         
-        # 補間 & 加工
         y1_interp = np.interp(common_x, d['x'][::-1], d['vcd'][::-1]) * v_s + v_o
         y2_interp = np.interp(common_x, d['x'][::-1], d['ir'][::-1]) * i_s + i_o
-        y3_interp = np.interp(common_x, d['x'][::-1], d['noise'][::-1]) * v_s # NoiseはVCDのScaleのみ適用
+        y3_interp = np.interp(common_x, d['x'][::-1], d['noise'][::-1]) * v_s 
         
         safe_name = f"File_{current_col//3}"
         df_out[f"{safe_name}_Y1"] = y1_interp
@@ -189,19 +181,17 @@ def create_gnuplot_package(data_list, settings_dict, x_lim, y_labels, show_noise
         df_out[f"{safe_name}_Y3"] = y3_interp
         
         title = fname.replace('_', '\\_')
-        # Gnuplotコマンド
         common_style = f"w l lc rgb '{c}' lw {w} dt {dt}"
         cmds_y1.append(f"'data.dat' u 1:{current_col} {common_style} title '{title}'")
-        cmds_y2.append(f"'data.dat' u 1:{current_col+1} {common_style} notitle") # 凡例は1つで十分
+        cmds_y2.append(f"'data.dat' u 1:{current_col+1} {common_style} notitle") 
         if show_noise:
             cmds_y3.append(f"'data.dat' u 1:{current_col+2} {common_style} notitle")
             
         current_col += 3
 
     data_str = df_out.to_csv(sep='\t', index=False, float_format='%.6f')
-    xr = f"[{x_lim[1]}:{x_lim[0]}]" # 降順
+    xr = f"[{x_lim[1]}:{x_lim[0]}]" 
 
-    # Layout
     layout_rows = 3 if show_noise else 2
     height = 900 if show_noise else 800
     
@@ -267,18 +257,18 @@ def render_matplotlib_comparison_advanced(data_source, prefix, label_y1, label_y
         target_data = [d for d in data_source if d['filename'] in selected_files]
     
     with col_c_opt:
-        st.markdown("##### グラフ設定")
-        # 設定フォーム
-        with st.form(key=f"{prefix}_plot_form"):
-            c_leg, c_noise = st.columns(2)
-            show_legend = c_leg.checkbox("凡例を表示", value=True, key=f"{prefix}_leg")
-            
-            show_noise = False
-            if allow_noise:
-                show_noise = c_noise.checkbox("ノイズ (4列目) を表示", value=False, key=f"{prefix}_nse")
-            
-            with st.expander("軸範囲設定 (Axis Range)", expanded=False):
-                st.markdown("###### X軸 (波数)")
+        with st.expander("⚙️ グラフ設定 (軸・範囲・スタイル) [クリックで開閉]", expanded=True):
+            with st.form(key=f"{prefix}_plot_form"):
+                st.markdown("###### 全般設定")
+                c_leg, c_noise = st.columns(2)
+                show_legend = c_leg.checkbox("凡例を表示", value=True, key=f"{prefix}_leg")
+                
+                show_noise = False
+                if allow_noise:
+                    show_noise = c_noise.checkbox("ノイズ (4列目) を表示", value=False, key=f"{prefix}_nse")
+                
+                st.markdown("---")
+                st.markdown("###### 軸範囲設定 (Axis Range)")
                 c1, c2 = st.columns(2)
                 x_high = c1.number_input("Left (High cm-1)", value=2000.0, key=f"{prefix}_xh")
                 x_low = c2.number_input("Right (Low cm-1)", value=800.0, key=f"{prefix}_xl")
@@ -308,28 +298,24 @@ def render_matplotlib_comparison_advanced(data_source, prefix, label_y1, label_y
                         y3_max = c_y3_1.number_input("Max", value=0.0005, format="%.5f", key=f"{prefix}_y3x")
                         y3_min = c_y3_2.number_input("Min", value=-0.0005, format="%.5f", key=f"{prefix}_y3n")
 
-            st.markdown("---")
-            st.markdown("##### 🎨 詳細スタイル & スペクトル操作")
-            
-            default_colors = list(mcolors.TABLEAU_COLORS.values())
-            plot_settings = {} # filename -> dict of settings
+                st.markdown("---")
+                st.markdown("###### 🎨 詳細スタイル & スペクトル操作")
+                
+                default_colors = list(mcolors.TABLEAU_COLORS.values())
+                plot_settings = {} 
 
-            if target_data:
-                # ファイルごとに設定を表示
-                with st.expander("各プロットの設定を開く", expanded=True):
+                if target_data:
                     for i, d in enumerate(target_data):
                         fname = d['filename']
                         def_c = default_colors[i % len(default_colors)]
                         
                         st.markdown(f"**{i+1}. {fname}**")
                         
-                        # 行1: スタイル
                         c_s1, c_s2, c_s3 = st.columns(3)
                         p_color = c_s1.color_picker("Color", value=def_c, key=f"{prefix}_c_{i}")
                         p_width = c_s2.number_input("Width", value=1.5, step=0.5, key=f"{prefix}_w_{i}")
                         p_style = c_s3.selectbox("Line Style", ["solid", "dash", "dot", "dashdot"], index=0, key=f"{prefix}_ls_{i}")
                         
-                        # 行2: 操作 (Scale/Offset)
                         c_o1, c_o2, c_o3, c_o4 = st.columns(4)
                         v_scale = c_o1.number_input(f"{label_y1} x", value=1.0, step=0.1, key=f"{prefix}_vs_{i}")
                         v_offset = c_o2.number_input(f"{label_y1} +", value=0.0, step=0.0001, format="%.5f", key=f"{prefix}_vo_{i}")
@@ -343,7 +329,7 @@ def render_matplotlib_comparison_advanced(data_source, prefix, label_y1, label_y
                         }
                         st.divider()
 
-            submit_btn = st.form_submit_button("グラフを更新 (再プロット)")
+                submit_btn = st.form_submit_button("グラフを更新 (再プロット)")
 
     if submit_btn:
         if not target_data:
@@ -367,7 +353,6 @@ def render_matplotlib_comparison_advanced(data_source, prefix, label_y1, label_y
             fname = d['filename']
             stt = plot_settings.get(fname, {})
             
-            # パラメータ取得
             color = stt.get('color', 'black')
             width = stt.get('width', 1.5)
             ls = stt.get('dash', 'solid')
@@ -375,14 +360,12 @@ def render_matplotlib_comparison_advanced(data_source, prefix, label_y1, label_y
             v_s, v_o = stt.get('vcd_scale', 1.0), stt.get('vcd_offset', 0.0)
             i_s, i_o = stt.get('ir_scale', 1.0), stt.get('ir_offset', 0.0)
             
-            # データ加工
             x_vals = d['x']
             y1_vals = d['vcd'] * v_s + v_o
             y2_vals = d['ir'] * i_s + i_o
-            y3_vals = d['noise'] * v_s # NoiseはVCDと同じ倍率を適用(Offsetはなし)
+            y3_vals = d['noise'] * v_s 
             
             label = fname
-            # 倍率/オフセットがある場合、ラベルに追記しても良いが長くなるので省略、あるいは凡例でわかるようにする
             
             ax1.plot(x_vals, y1_vals, color=color, linewidth=width, linestyle=ls, label=label)
             ax2.plot(x_vals, y2_vals, color=color, linewidth=width, linestyle=ls)
@@ -408,7 +391,6 @@ def render_matplotlib_comparison_advanced(data_source, prefix, label_y1, label_y
         
         st.pyplot(fig)
         
-        # Gnuplot Export
         st.markdown("---")
         c_dl, _ = st.columns([1, 2])
         zip_dat = create_gnuplot_package(
@@ -425,7 +407,6 @@ def render_matplotlib_comparison_advanced(data_source, prefix, label_y1, label_y
 # 関数: Gnuplot用パッケージ作成 (比較用) [Tab 4用]
 # ---------------------------------------------------------
 def create_gnuplot_comparison_package(exp_list, calc_list, style_dict, x_lim, use_dual_axis):
-    # (既存の実装を維持)
     if not exp_list and not calc_list: return None
     all_x = []
     for d in exp_list + calc_list: all_x.extend(d['x'])
@@ -453,9 +434,10 @@ def create_gnuplot_comparison_package(exp_list, calc_list, style_dict, x_lim, us
             df_out[f"{safe_name}_IR"] = ir_interp
             df_out[f"{safe_name}_VCD"] = vcd_interp
             title = fname.replace('_', '\\_')
+            
             axes_opt = "axes x1y2" if (use_dual_axis and group_name == "Calc") else ""
-            cmds_ir.append(f"'data.dat' u 1:{current_col} w l {axes_opt} lc rgb '{color}' lw {width} dt {dt} title '{title}'")
             cmds_vcd.append(f"'data.dat' u 1:{current_col+1} w l {axes_opt} lc rgb '{color}' lw {width} dt {dt} title '{title}'")
+            cmds_ir.append(f"'data.dat' u 1:{current_col} w l {axes_opt} lc rgb '{color}' lw {width} dt {dt} title '{title}'")
             current_col += 2
         return cmds_vcd, cmds_ir
 
@@ -468,11 +450,10 @@ def create_gnuplot_comparison_package(exp_list, calc_list, style_dict, x_lim, us
 
     data_str = df_out.to_csv(sep='\t', index=False, float_format='%.6f')
     xr = f"[{x_lim[1]}:{x_lim[0]}]"
-    dual_axis_setup = ""
-    if use_dual_axis:
-        dual_axis_setup = "set ytics nomirror\nset y2tics\nset ylabel 'Exp Signal'\nset y2label 'Calc Signal'"
-    else:
-        dual_axis_setup = "set ylabel 'Signal Intensity'"
+    
+    # Gnuplot側も2段構成に戻す
+    dual_axis_setup_vcd = "set ytics nomirror\nset y2tics" if use_dual_axis else ""
+    dual_axis_setup_ir = "set ytics nomirror\nset y2tics" if use_dual_axis else ""
 
     script = f"""
 set terminal pngcairo size 1000,800 font "Arial,12"
@@ -486,13 +467,21 @@ set bmargin 0
 set format x ""
 set xzeroaxis lt 1 lc rgb "black" lw 1
 set key right top font ",10"
-{dual_axis_setup}
+
+# VCD Plot
+set ylabel 'VCD Intensity'
+{dual_axis_setup_vcd}
 plot {', '.join(plot_cmds_vcd)}
+
+# IR Plot
+set ylabel 'IR Absorbance'
 set xlabel "Wavenumber (cm^{{-1}})"
 set bmargin 4
 set tmargin 0
 set format x "%g"
+{dual_axis_setup_ir}
 plot {', '.join(plot_cmds_ir)}
+
 unset multiplot
     """
     zip_buffer = io.BytesIO()
@@ -613,7 +602,7 @@ def main():
     ld_data = st.session_state['ld_data']
     calc_data = st.session_state['calc_data']
 
-    # Tab 1: VCD 個別 (省略: 前回の修正済みコードと同様)
+    # Tab 1: VCD 個別
     with tab1:
         if not vcd_data:
             st.info("サイドバーから実験データ(VCD)を読み込んでください。")
@@ -660,21 +649,21 @@ def main():
                     fig.update_yaxes(range=[y_ir_min, y_ir_max], row=2, col=1)
                 st.plotly_chart(fig, use_container_width=True)
 
-    # Tab 2: VCD 比較 (強化版)
+    # Tab 2: VCD 比較
     with tab2:
         if not vcd_data: st.info("データがありません。")
         else:
             st.subheader("Multi-Spectra Comparison (VCD)")
             render_matplotlib_comparison_advanced(vcd_data, "vcd", "VCD Intensity", "Absorbance", allow_noise=True)
 
-    # Tab 3: LD 解析 (強化版)
+    # Tab 3: LD 解析
     with tab3:
         if not ld_data: st.info("LDデータがありません。")
         else:
             st.subheader("LD Analysis")
             render_matplotlib_comparison_advanced(ld_data, "ld", "LD Signal", "Absorbance", allow_noise=False)
 
-    # Tab 4: 実験 vs 計算 (修正: GnuplotDL追加)
+    # Tab 4: 実験 vs 計算 (修正: 2段表示 + 手動Y軸)
     with tab4:
         st.subheader("🔬 Experimental vs Computational Comparison")
         c_exp, c_calc = st.columns(2)
@@ -708,13 +697,33 @@ def main():
                     shift_freq = st.number_input("Shift (+/-)", value=0.0, step=1.0)
                 with col_para2:
                     st.markdown("**Y軸 (強度) 倍率 [Calcのみ]**")
-                    scale_int_vcd = st.number_input("VCD Scale", value=1.0, step=0.1)
-                    scale_int_ir = st.number_input("IR Scale", value=1.0, step=0.1)
+                    # 修正: 0.001単位で設定可能に
+                    scale_int_vcd = st.number_input("VCD Scale", value=1.0, step=0.001, format="%.4f")
+                    scale_int_ir = st.number_input("IR Scale", value=1.0, step=0.001, format="%.4f")
                 with col_para3:
                     st.markdown("**表示設定**")
-                    use_dual_axis = st.checkbox("2軸プロット (Dual Y)", value=True)
+                    use_dual_axis = st.checkbox("Calcを右軸にする (Dual Axis)", value=True)
                     plot_range = st.slider("表示範囲 (cm-1)", 0, 4000, (800, 2000))
-
+                
+                # Manual Y Range
+                st.markdown("---")
+                st.markdown("###### Y軸 手動範囲設定 (Exp軸/主軸)")
+                use_manual_y = st.checkbox("Y軸の範囲を手動で固定する", value=False, key="t4_manual_y")
+                
+                t4_vcd_min, t4_vcd_max = None, None
+                t4_ir_min, t4_ir_max = None, None
+                
+                if use_manual_y:
+                    c_my1, c_my2 = st.columns(2)
+                    with c_my1:
+                        st.caption("VCD Range (上段)")
+                        t4_vcd_max = st.number_input("VCD Max", value=0.0001, format="%.6f", key="t4_vmx")
+                        t4_vcd_min = st.number_input("VCD Min", value=-0.0001, format="%.6f", key="t4_vmn")
+                    with c_my2:
+                        st.caption("IR Range (下段)")
+                        t4_ir_max = st.number_input("IR Max", value=1.0, format="%.2f", key="t4_imx")
+                        t4_ir_min = st.number_input("IR Min", value=0.0, format="%.2f", key="t4_imn")
+                
                 st.markdown("---")
                 st.markdown("##### グラフスタイル詳細設定")
                 style_dict = {} 
@@ -747,21 +756,32 @@ def main():
                             s = st.selectbox("Style", ["solid", "dash", "dot", "dashdot"], index=1, key=f"cs_{fname}")
                             style_dict[fname] = {'color': c, 'width': w, 'dash': s}
 
-            fig_cmp = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1,
-                                    specs=[[{"secondary_y": True}], [{"secondary_y": True}]], 
-                                    subplot_titles=("VCD Comparison", "IR Comparison"))
+            # --------------------------------------------------------
+            # プロット作成: 上下2段 (Row1: VCD, Row2: IR)
+            # --------------------------------------------------------
+            fig_cmp = make_subplots(
+                rows=2, cols=1, 
+                shared_xaxes=True, 
+                vertical_spacing=0.1,
+                specs=[[{"secondary_y": True}], [{"secondary_y": True}]], 
+                subplot_titles=("VCD Comparison", "IR Comparison")
+            )
             
             processed_calc_data = []
 
+            # 実験データ (Primary Y)
             for d in target_exp_data:
                 style = style_dict[d['filename']]
+                # VCD -> Row 1, Expは常に左軸(secondary_y=False)
                 fig_cmp.add_trace(go.Scatter(x=d['x'], y=d['vcd'], name=f"Exp: {d['filename']}", 
                                              line=dict(color=style['color'], width=style['width'], dash=style['dash'])), 
                                   row=1, col=1, secondary_y=False)
+                # IR -> Row 2, Expは常に左軸
                 fig_cmp.add_trace(go.Scatter(x=d['x'], y=d['ir'], name=f"Exp IR: {d['filename']}", 
                                              line=dict(color=style['color'], width=style['width'], dash=style['dash']), showlegend=False), 
                                   row=2, col=1, secondary_y=False)
 
+            # 計算データ (Primary or Secondary Y)
             for d in target_calc_data:
                 style = style_dict[d['filename']]
                 calc_x = d['x'] * scale_freq + shift_freq
@@ -769,9 +789,11 @@ def main():
                 calc_ir = d['ir'] * scale_int_ir
                 processed_calc_data.append({'filename': d['filename'], 'x': calc_x, 'vcd': calc_vcd, 'ir': calc_ir})
 
+                # VCD -> Row 1
                 fig_cmp.add_trace(go.Scatter(x=calc_x, y=calc_vcd, name=f"Calc: {d['filename']}", 
                                              line=dict(color=style['color'], width=style['width'], dash=style['dash'])), 
                                   row=1, col=1, secondary_y=use_dual_axis)
+                # IR -> Row 2
                 fig_cmp.add_trace(go.Scatter(x=calc_x, y=calc_ir, name=f"Calc IR: {d['filename']}", 
                                              line=dict(color=style['color'], width=style['width'], dash=style['dash']), showlegend=False), 
                                   row=2, col=1, secondary_y=use_dual_axis)
@@ -779,8 +801,21 @@ def main():
             fig_cmp.update_layout(height=700, hovermode="x unified")
             fig_cmp.update_xaxes(range=[plot_range[1], plot_range[0]], row=2, col=1, title_text="Wavenumber (cm⁻¹)")
             fig_cmp.update_xaxes(range=[plot_range[1], plot_range[0]], row=1, col=1)
-            fig_cmp.update_yaxes(title_text="Exp Signal", secondary_y=False)
-            if use_dual_axis: fig_cmp.update_yaxes(title_text="Calc Signal", secondary_y=True, showgrid=False)
+            
+            # 軸ラベル
+            fig_cmp.update_yaxes(title_text="Exp Signal", secondary_y=False, row=1, col=1)
+            fig_cmp.update_yaxes(title_text="Absorbance", secondary_y=False, row=2, col=1)
+            
+            if use_dual_axis: 
+                fig_cmp.update_yaxes(title_text="Calc Signal", secondary_y=True, showgrid=False, row=1, col=1)
+                fig_cmp.update_yaxes(title_text="Calc Absorbance", secondary_y=True, showgrid=False, row=2, col=1)
+            
+            # 手動Y軸設定 (Primary Axisのみ適用)
+            if use_manual_y:
+                if t4_vcd_min is not None and t4_vcd_max is not None:
+                    fig_cmp.update_yaxes(range=[t4_vcd_min, t4_vcd_max], secondary_y=False, row=1, col=1)
+                if t4_ir_min is not None and t4_ir_max is not None:
+                    fig_cmp.update_yaxes(range=[t4_ir_min, t4_ir_max], secondary_y=False, row=2, col=1)
 
             st.plotly_chart(fig_cmp, use_container_width=True)
             
