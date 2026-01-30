@@ -805,7 +805,7 @@ def main():
                 st.markdown("---")
                 col_dl, _ = st.columns([1, 2])
                 zip_dat = create_gnuplot_comparison_package(
-                    target_exp_data, processed_calc_data, style_dict, plot_range, use_dual_axis=False
+                    target_exp_data, processed_calc_data, style_dict, plot_range
                 )
                 if zip_dat:
                     col_dl.download_button("💾 Gnuplotデータ (.zip) を保存", zip_dat, "comparison_gnuplot.zip", "application/zip")
@@ -915,7 +915,7 @@ def main():
                             with cols_c[i % 3]:
                                 st.markdown(f"**{fname}**")
                                 c = st.color_picker("Col", def_c, key=f"t5_cc_{i}")
-                                w = st.number_input("Wid", 0.5, 5.0, 1.5, 0.5, key=f"t5_cw_{i}")
+                                w = st.number_input("Width", 0.5, 5.0, 1.5, 0.5, key=f"t5_cw_{i}")
                                 ls = st.selectbox("Line", ["-", "--", "-.", ":"], 1, key=f"t5_cl_{i}")
                                 t5_styles[fname] = {'color': c, 'width': w, 'ls': ls}
 
