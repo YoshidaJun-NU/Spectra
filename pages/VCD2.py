@@ -435,9 +435,9 @@ def create_gnuplot_comparison_package(exp_list, calc_list, style_dict, x_lim, us
             df_out[f"{safe_name}_VCD"] = vcd_interp
             title = fname.replace('_', '\\_')
             
-            axes_opt = "axes x1y2" if (use_dual_axis and group_name == "Calc") else ""
-            cmds_vcd.append(f"'data.dat' u 1:{current_col+1} w l {axes_opt} lc rgb '{color}' lw {width} dt {dt} title '{title}'")
-            cmds_ir.append(f"'data.dat' u 1:{current_col} w l {axes_opt} lc rgb '{color}' lw {width} dt {dt} title '{title}'")
+            # 2段表示の場合、axes指定は不要
+            cmds_vcd.append(f"'data.dat' u 1:{current_col+1} w l lc rgb '{color}' lw {width} dt {dt} title '{title}'")
+            cmds_ir.append(f"'data.dat' u 1:{current_col} w l lc rgb '{color}' lw {width} dt {dt} title '{title}'")
             current_col += 2
         return cmds_vcd, cmds_ir
 
@@ -451,10 +451,6 @@ def create_gnuplot_comparison_package(exp_list, calc_list, style_dict, x_lim, us
     data_str = df_out.to_csv(sep='\t', index=False, float_format='%.6f')
     xr = f"[{x_lim[1]}:{x_lim[0]}]"
     
-    # Gnuplot側も2段構成に戻す
-    dual_axis_setup_vcd = "set ytics nomirror\nset y2tics" if use_dual_axis else ""
-    dual_axis_setup_ir = "set ytics nomirror\nset y2tics" if use_dual_axis else ""
-
     script = f"""
 set terminal pngcairo size 1000,800 font "Arial,12"
 set output 'comparison.png'
@@ -470,7 +466,6 @@ set key right top font ",10"
 
 # VCD Plot
 set ylabel 'VCD Intensity'
-{dual_axis_setup_vcd}
 plot {', '.join(plot_cmds_vcd)}
 
 # IR Plot
@@ -479,7 +474,6 @@ set xlabel "Wavenumber (cm^{{-1}})"
 set bmargin 4
 set tmargin 0
 set format x "%g"
-{dual_axis_setup_ir}
 plot {', '.join(plot_cmds_ir)}
 
 unset multiplot
@@ -501,6 +495,10 @@ def main():
     if 'vcd_data' not in st.session_state: st.session_state['vcd_data'] = []
     if 'ld_data' not in st.session_state: st.session_state['ld_data'] = []
     if 'calc_data' not in st.session_state: st.session_state['calc_data'] = []
+    
+    # セッション状態の初期化 (再プロット用)
+    if 'tab4_plot_trigger' not in st.session_state:
+        st.session_state['tab4_plot_trigger'] = False
 
     # ==========================================
     # 1. サイドバー: データ読み込み設定
@@ -663,7 +661,7 @@ def main():
             st.subheader("LD Analysis")
             render_matplotlib_comparison_advanced(ld_data, "ld", "LD Signal", "Absorbance", allow_noise=False)
 
-    # Tab 4: 実験 vs 計算 (修正: 2段表示 + 手動Y軸)
+    # Tab 4: 実験 vs 計算 (修正: 上下2段 + 手動Y軸範囲)
     with tab4:
         st.subheader("🔬 Experimental vs Computational Comparison")
         c_exp, c_calc = st.columns(2)
@@ -689,143 +687,148 @@ def main():
         st.markdown("---")
 
         if target_exp_data or target_calc_data:
-            with st.expander("🎚️ パラメータ & 🎨 スタイル設定", expanded=True):
-                col_para1, col_para2, col_para3 = st.columns(3)
-                with col_para1:
-                    st.markdown("**X軸 (波数) 補正 [Calcのみ]**")
-                    scale_freq = st.number_input("Scaling Factor", value=0.980, step=0.001, format="%.4f")
-                    shift_freq = st.number_input("Shift (+/-)", value=0.0, step=1.0)
-                with col_para2:
-                    st.markdown("**Y軸 (強度) 倍率 [Calcのみ]**")
-                    # 修正: 0.001単位で設定可能に
-                    scale_int_vcd = st.number_input("VCD Scale", value=1.0, step=0.001, format="%.4f")
-                    scale_int_ir = st.number_input("IR Scale", value=1.0, step=0.001, format="%.4f")
-                with col_para3:
-                    st.markdown("**表示設定**")
-                    use_dual_axis = st.checkbox("Calcを右軸にする (Dual Axis)", value=True)
-                    plot_range = st.slider("表示範囲 (cm-1)", 0, 4000, (800, 2000))
+            # フォーム開始 (再プロット用)
+            with st.form("tab4_form"):
+                with st.expander("🎚️ パラメータ & 🎨 スタイル設定", expanded=True):
+                    col_para1, col_para2, col_para3 = st.columns(3)
+                    with col_para1:
+                        st.markdown("**X軸 (波数) 補正 [Calcのみ]**")
+                        scale_freq = st.number_input("Scaling Factor", value=0.980, step=0.001, format="%.4f")
+                        shift_freq = st.number_input("Shift (+/-)", value=0.0, step=1.0)
+                    with col_para2:
+                        st.markdown("**Y軸 (強度) 倍率 [Calcのみ]**")
+                        scale_int_vcd = st.number_input("VCD Scale", value=1.0, step=0.001, format="%.4f")
+                        scale_int_ir = st.number_input("IR Scale", value=1.0, step=0.001, format="%.4f")
+                    with col_para3:
+                        st.markdown("**表示設定**")
+                        # 2段分割のためDual Axisチェックは削除（常に2段）
+                        plot_range = st.slider("表示範囲 (cm-1)", 0, 4000, (800, 2000))
+                    
+                    # Manual Y Range
+                    st.markdown("---")
+                    st.markdown("###### Y軸 手動範囲設定 (全データ適用)")
+                    use_manual_y = st.checkbox("Y軸の範囲を手動で固定する", value=False, key="t4_manual_y")
+                    
+                    t4_vcd_min, t4_vcd_max = None, None
+                    t4_ir_min, t4_ir_max = None, None
+                    
+                    if use_manual_y:
+                        c_my1, c_my2 = st.columns(2)
+                        with c_my1:
+                            st.caption("VCD Range (上段)")
+                            t4_vcd_max = st.number_input("VCD Max", value=0.0001, format="%.6f", key="t4_vmx")
+                            t4_vcd_min = st.number_input("VCD Min", value=-0.0001, format="%.6f", key="t4_vmn")
+                        with c_my2:
+                            st.caption("IR Range (下段)")
+                            t4_ir_max = st.number_input("IR Max", value=1.0, format="%.2f", key="t4_imx")
+                            t4_ir_min = st.number_input("IR Min", value=0.0, format="%.2f", key="t4_imn")
+                    
+                    st.markdown("---")
+                    st.markdown("##### グラフスタイル詳細設定")
+                    style_dict = {} 
+                    default_colors = pc.qualitative.Plotly
+                    
+                    if target_exp_data:
+                        st.caption("実験データ")
+                        cols_e = st.columns(3)
+                        for i, d in enumerate(target_exp_data):
+                            fname = d['filename']
+                            def_c = default_colors[i % len(default_colors)]
+                            with cols_e[i % 3]:
+                                st.markdown(f"**{fname}**")
+                                c = st.color_picker("Color", def_c, key=f"ec_{fname}")
+                                w = st.number_input("Width", 1.0, 5.0, 2.0, 0.5, key=f"ew_{fname}")
+                                s = st.selectbox("Style", ["solid", "dash", "dot", "dashdot"], index=0, key=f"es_{fname}")
+                                style_dict[fname] = {'color': c, 'width': w, 'dash': s}
+                    
+                    if target_calc_data:
+                        st.caption("計算データ")
+                        cols_c = st.columns(3)
+                        offset = len(target_exp_data)
+                        for i, d in enumerate(target_calc_data):
+                            fname = d['filename']
+                            def_c = default_colors[(offset + i) % len(default_colors)]
+                            with cols_c[i % 3]:
+                                st.markdown(f"**{fname}**")
+                                c = st.color_picker("Color", def_c, key=f"cc_{fname}")
+                                w = st.number_input("Width", 1.0, 5.0, 1.5, 0.5, key=f"cw_{fname}")
+                                s = st.selectbox("Style", ["solid", "dash", "dot", "dashdot"], index=1, key=f"cs_{fname}")
+                                style_dict[fname] = {'color': c, 'width': w, 'dash': s}
                 
-                # Manual Y Range
-                st.markdown("---")
-                st.markdown("###### Y軸 手動範囲設定 (Exp軸/主軸)")
-                use_manual_y = st.checkbox("Y軸の範囲を手動で固定する", value=False, key="t4_manual_y")
-                
-                t4_vcd_min, t4_vcd_max = None, None
-                t4_ir_min, t4_ir_max = None, None
-                
-                if use_manual_y:
-                    c_my1, c_my2 = st.columns(2)
-                    with c_my1:
-                        st.caption("VCD Range (上段)")
-                        t4_vcd_max = st.number_input("VCD Max", value=0.0001, format="%.6f", key="t4_vmx")
-                        t4_vcd_min = st.number_input("VCD Min", value=-0.0001, format="%.6f", key="t4_vmn")
-                    with c_my2:
-                        st.caption("IR Range (下段)")
-                        t4_ir_max = st.number_input("IR Max", value=1.0, format="%.2f", key="t4_imx")
-                        t4_ir_min = st.number_input("IR Min", value=0.0, format="%.2f", key="t4_imn")
-                
-                st.markdown("---")
-                st.markdown("##### グラフスタイル詳細設定")
-                style_dict = {} 
-                default_colors = pc.qualitative.Plotly
-                
-                if target_exp_data:
-                    st.caption("実験データ")
-                    cols_e = st.columns(3)
-                    for i, d in enumerate(target_exp_data):
-                        fname = d['filename']
-                        def_c = default_colors[i % len(default_colors)]
-                        with cols_e[i % 3]:
-                            st.markdown(f"**{fname}**")
-                            c = st.color_picker("Color", def_c, key=f"ec_{fname}")
-                            w = st.number_input("Width", 1.0, 5.0, 2.0, 0.5, key=f"ew_{fname}")
-                            s = st.selectbox("Style", ["solid", "dash", "dot", "dashdot"], index=0, key=f"es_{fname}")
-                            style_dict[fname] = {'color': c, 'width': w, 'dash': s}
-                
-                if target_calc_data:
-                    st.caption("計算データ")
-                    cols_c = st.columns(3)
-                    offset = len(target_exp_data)
-                    for i, d in enumerate(target_calc_data):
-                        fname = d['filename']
-                        def_c = default_colors[(offset + i) % len(default_colors)]
-                        with cols_c[i % 3]:
-                            st.markdown(f"**{fname}**")
-                            c = st.color_picker("Color", def_c, key=f"cc_{fname}")
-                            w = st.number_input("Width", 1.0, 5.0, 1.5, 0.5, key=f"cw_{fname}")
-                            s = st.selectbox("Style", ["solid", "dash", "dot", "dashdot"], index=1, key=f"cs_{fname}")
-                            style_dict[fname] = {'color': c, 'width': w, 'dash': s}
+                # Submit Button
+                submitted = st.form_submit_button("グラフを更新 (再プロット)")
+                if submitted:
+                    st.session_state['tab4_plot_trigger'] = True
 
             # --------------------------------------------------------
             # プロット作成: 上下2段 (Row1: VCD, Row2: IR)
             # --------------------------------------------------------
-            fig_cmp = make_subplots(
-                rows=2, cols=1, 
-                shared_xaxes=True, 
-                vertical_spacing=0.1,
-                specs=[[{"secondary_y": True}], [{"secondary_y": True}]], 
-                subplot_titles=("VCD Comparison", "IR Comparison")
-            )
-            
-            processed_calc_data = []
+            if st.session_state['tab4_plot_trigger']:
+                fig_cmp = make_subplots(
+                    rows=2, cols=1, 
+                    shared_xaxes=True, 
+                    vertical_spacing=0.1,
+                    subplot_titles=("VCD Comparison", "IR Comparison")
+                )
+                
+                processed_calc_data = []
 
-            # 実験データ (Primary Y)
-            for d in target_exp_data:
-                style = style_dict[d['filename']]
-                # VCD -> Row 1, Expは常に左軸(secondary_y=False)
-                fig_cmp.add_trace(go.Scatter(x=d['x'], y=d['vcd'], name=f"Exp: {d['filename']}", 
-                                             line=dict(color=style['color'], width=style['width'], dash=style['dash'])), 
-                                  row=1, col=1, secondary_y=False)
-                # IR -> Row 2, Expは常に左軸
-                fig_cmp.add_trace(go.Scatter(x=d['x'], y=d['ir'], name=f"Exp IR: {d['filename']}", 
-                                             line=dict(color=style['color'], width=style['width'], dash=style['dash']), showlegend=False), 
-                                  row=2, col=1, secondary_y=False)
+                # 実験データ
+                for d in target_exp_data:
+                    style = style_dict.get(d['filename'], {'color':'black', 'width':1, 'dash':'solid'})
+                    # VCD -> Row 1
+                    fig_cmp.add_trace(go.Scatter(x=d['x'], y=d['vcd'], name=f"Exp: {d['filename']}", 
+                                                 line=dict(color=style['color'], width=style['width'], dash=style['dash'])), 
+                                      row=1, col=1)
+                    # IR -> Row 2
+                    fig_cmp.add_trace(go.Scatter(x=d['x'], y=d['ir'], name=f"Exp IR: {d['filename']}", 
+                                                 line=dict(color=style['color'], width=style['width'], dash=style['dash']), showlegend=False), 
+                                      row=2, col=1)
 
-            # 計算データ (Primary or Secondary Y)
-            for d in target_calc_data:
-                style = style_dict[d['filename']]
-                calc_x = d['x'] * scale_freq + shift_freq
-                calc_vcd = d['vcd'] * scale_int_vcd
-                calc_ir = d['ir'] * scale_int_ir
-                processed_calc_data.append({'filename': d['filename'], 'x': calc_x, 'vcd': calc_vcd, 'ir': calc_ir})
+                # 計算データ
+                for d in target_calc_data:
+                    style = style_dict.get(d['filename'], {'color':'red', 'width':1, 'dash':'solid'})
+                    calc_x = d['x'] * scale_freq + shift_freq
+                    calc_vcd = d['vcd'] * scale_int_vcd
+                    calc_ir = d['ir'] * scale_int_ir
+                    processed_calc_data.append({'filename': d['filename'], 'x': calc_x, 'vcd': calc_vcd, 'ir': calc_ir})
 
-                # VCD -> Row 1
-                fig_cmp.add_trace(go.Scatter(x=calc_x, y=calc_vcd, name=f"Calc: {d['filename']}", 
-                                             line=dict(color=style['color'], width=style['width'], dash=style['dash'])), 
-                                  row=1, col=1, secondary_y=use_dual_axis)
-                # IR -> Row 2
-                fig_cmp.add_trace(go.Scatter(x=calc_x, y=calc_ir, name=f"Calc IR: {d['filename']}", 
-                                             line=dict(color=style['color'], width=style['width'], dash=style['dash']), showlegend=False), 
-                                  row=2, col=1, secondary_y=use_dual_axis)
+                    # VCD -> Row 1
+                    fig_cmp.add_trace(go.Scatter(x=calc_x, y=calc_vcd, name=f"Calc: {d['filename']}", 
+                                                 line=dict(color=style['color'], width=style['width'], dash=style['dash'])), 
+                                      row=1, col=1)
+                    # IR -> Row 2
+                    fig_cmp.add_trace(go.Scatter(x=calc_x, y=calc_ir, name=f"Calc IR: {d['filename']}", 
+                                                 line=dict(color=style['color'], width=style['width'], dash=style['dash']), showlegend=False), 
+                                      row=2, col=1)
 
-            fig_cmp.update_layout(height=700, hovermode="x unified")
-            fig_cmp.update_xaxes(range=[plot_range[1], plot_range[0]], row=2, col=1, title_text="Wavenumber (cm⁻¹)")
-            fig_cmp.update_xaxes(range=[plot_range[1], plot_range[0]], row=1, col=1)
-            
-            # 軸ラベル
-            fig_cmp.update_yaxes(title_text="Exp Signal", secondary_y=False, row=1, col=1)
-            fig_cmp.update_yaxes(title_text="Absorbance", secondary_y=False, row=2, col=1)
-            
-            if use_dual_axis: 
-                fig_cmp.update_yaxes(title_text="Calc Signal", secondary_y=True, showgrid=False, row=1, col=1)
-                fig_cmp.update_yaxes(title_text="Calc Absorbance", secondary_y=True, showgrid=False, row=2, col=1)
-            
-            # 手動Y軸設定 (Primary Axisのみ適用)
-            if use_manual_y:
-                if t4_vcd_min is not None and t4_vcd_max is not None:
-                    fig_cmp.update_yaxes(range=[t4_vcd_min, t4_vcd_max], secondary_y=False, row=1, col=1)
-                if t4_ir_min is not None and t4_ir_max is not None:
-                    fig_cmp.update_yaxes(range=[t4_ir_min, t4_ir_max], secondary_y=False, row=2, col=1)
+                fig_cmp.update_layout(height=700, hovermode="x unified")
+                fig_cmp.update_xaxes(range=[plot_range[1], plot_range[0]], row=2, col=1, title_text="Wavenumber (cm⁻¹)")
+                fig_cmp.update_xaxes(range=[plot_range[1], plot_range[0]], row=1, col=1)
+                
+                # 軸ラベル
+                fig_cmp.update_yaxes(title_text="VCD Intensity", row=1, col=1)
+                fig_cmp.update_yaxes(title_text="Absorbance", row=2, col=1)
+                
+                # 手動Y軸設定
+                if use_manual_y:
+                    if t4_vcd_min is not None and t4_vcd_max is not None:
+                        fig_cmp.update_yaxes(range=[t4_vcd_min, t4_vcd_max], row=1, col=1)
+                    if t4_ir_min is not None and t4_ir_max is not None:
+                        fig_cmp.update_yaxes(range=[t4_ir_min, t4_ir_max], row=2, col=1)
 
-            st.plotly_chart(fig_cmp, use_container_width=True)
-            
-            st.markdown("---")
-            col_dl, _ = st.columns([1, 2])
-            zip_dat = create_gnuplot_comparison_package(
-                target_exp_data, processed_calc_data, style_dict, plot_range, use_dual_axis
-            )
-            if zip_dat:
-                col_dl.download_button("💾 Gnuplotデータ (.zip) を保存", zip_dat, "comparison_gnuplot.zip", "application/zip")
+                st.plotly_chart(fig_cmp, use_container_width=True)
+                
+                st.markdown("---")
+                col_dl, _ = st.columns([1, 2])
+                # Gnuplotパッケージ作成 (use_dual_axis=Falseで渡す)
+                zip_dat = create_gnuplot_comparison_package(
+                    target_exp_data, processed_calc_data, style_dict, plot_range, use_dual_axis=False
+                )
+                if zip_dat:
+                    col_dl.download_button("💾 Gnuplotデータ (.zip) を保存", zip_dat, "comparison_gnuplot.zip", "application/zip")
+            else:
+                st.info("👆 設定を変更し、「グラフを更新」ボタンを押してプロットしてください。")
 
 if __name__ == "__main__":
     main()
