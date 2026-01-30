@@ -697,9 +697,9 @@ def main():
                         shift_freq = st.number_input("Shift (+/-)", value=0.0, step=1.0)
                     with col_para2:
                         st.markdown("**Y軸 (強度) 倍率 [Calcのみ]**")
-                        # 0.0000001 (1e-7) まで設定可能に変更
-                        scale_int_vcd = st.number_input("VCD Scale", value=1.0, step=0.0000001, format="%.7f")
-                        scale_int_ir = st.number_input("IR Scale", value=1.0, step=0.0000001, format="%.7f")
+                        # 修正: 0.00000001 (1e-8) まで設定可能に & フォーマット変更
+                        scale_int_vcd = st.number_input("VCD Scale", value=1.0, step=1e-8, format="%.8f", help="1e-5 (0.00001) のような指数表記も入力可能です")
+                        scale_int_ir = st.number_input("IR Scale", value=1.0, step=1e-8, format="%.8f", help="1e-5 (0.00001) のような指数表記も入力可能です")
                     with col_para3:
                         st.markdown("**表示設定**")
                         plot_range = st.slider("表示範囲 (cm-1)", 0, 4000, (800, 2000))
