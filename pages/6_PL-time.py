@@ -68,7 +68,7 @@ if uploaded_file:
             show_legend = st.checkbox("凡例を表示する", value=True)
             # 【機能追加】目盛り線のオンオフ
             show_grid = st.checkbox("目盛り線を表示する", value=True)
-            tick_fontsize = st.number_input("目盛フォントサイズ", min_value=1, max_value=40, value=14, step=1)
+            tick_fontsize = st.number_input("目盛フォントサイズ", min_value=1, max_value=40, value=16, step=1)
 
         # ---------------------------------------------------------
         # 4. メインレイアウト (2カラム構成)
