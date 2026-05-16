@@ -68,6 +68,7 @@ if uploaded_file:
             show_legend = st.checkbox("凡例を表示する", value=True)
             # 【機能追加】目盛り線のオンオフ
             show_grid = st.checkbox("目盛り線を表示する", value=True)
+            tick_fontsize = st.number_input("目盛フォントサイズ", min_value=1, max_value=40, value=11, step=1)
 
         # ---------------------------------------------------------
         # 4. メインレイアウト (2カラム構成)
@@ -152,6 +153,7 @@ if uploaded_file:
 
             ax.set_xlabel("Time", fontsize=16)
             ax.set_ylabel("Intensity", fontsize=16)
+            ax.tick_params(axis='both', labelsize=tick_fontsize)
             
             # 【機能追加】目盛り線の制御
             if show_grid:
