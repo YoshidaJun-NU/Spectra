@@ -61,8 +61,8 @@ if uploaded_file:
         st.sidebar.header("2. Plot Appearance")
         with st.sidebar.expander("見た目の詳細設定"):
             raw_color = st.color_picker("点の色", value="#808080")
-            marker_type = st.selectbox("点の種類", ["o", ".", "x", "None"], index=1)
-            marker_size = st.slider("点のサイズ", 0, 15, 2)
+            marker_type = st.selectbox("点の種類", ["o", ".", "x", "None"], index=0)
+            marker_size = st.slider("点のサイズ", 0, 15, 4)
             fit_color = st.color_picker("Fit線の色", value="#FF0000")
             fit_lw = st.slider("Fit線の太さ", 0.5, 5.0, 2.0)
             show_legend = st.checkbox("凡例を表示する", value=True)
