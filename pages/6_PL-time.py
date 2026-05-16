@@ -151,8 +151,8 @@ if uploaded_file:
                         y_comp = popt[0] + popt[2*i+1] * np.exp(-t_smooth / popt[2*i+2])
                         ax.plot(t_smooth + fit_range[0], y_comp, '--', lw=1, label=f'τ_{i+1}={popt[2*i+2]:.2f}')
 
-            ax.set_xlabel("Time (μs)", fontsize=16)
-            ax.set_ylabel("Intensity", fontsize=16)
+            ax.set_xlabel("Time (μs)", fontsize=20)
+            ax.set_ylabel("Intensity", fontsize=20)
             ax.tick_params(axis='both', labelsize=tick_fontsize)
             
             # 【機能追加】目盛り線の制御
