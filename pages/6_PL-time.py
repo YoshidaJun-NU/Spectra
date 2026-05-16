@@ -68,7 +68,7 @@ if uploaded_file:
             show_legend = st.checkbox("凡例を表示する", value=True)
             # 【機能追加】目盛り線のオンオフ
             show_grid = st.checkbox("目盛り線を表示する", value=True)
-            tick_fontsize = st.number_input("目盛フォントサイズ", min_value=1, max_value=40, value=11, step=1)
+            tick_fontsize = st.number_input("目盛フォントサイズ", min_value=1, max_value=40, value=14, step=1)
 
         # ---------------------------------------------------------
         # 4. メインレイアウト (2カラム構成)
@@ -151,7 +151,7 @@ if uploaded_file:
                         y_comp = popt[0] + popt[2*i+1] * np.exp(-t_smooth / popt[2*i+2])
                         ax.plot(t_smooth + fit_range[0], y_comp, '--', lw=1, label=f'τ_{i+1}={popt[2*i+2]:.2f}')
 
-            ax.set_xlabel("Time", fontsize=16)
+            ax.set_xlabel("Time (μs)", fontsize=16)
             ax.set_ylabel("Intensity", fontsize=16)
             ax.tick_params(axis='both', labelsize=tick_fontsize)
             
