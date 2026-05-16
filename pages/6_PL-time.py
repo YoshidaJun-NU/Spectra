@@ -63,8 +63,8 @@ if uploaded_file:
             raw_color = st.color_picker("点の色", value="#808080")
             marker_type = st.selectbox("点の種類", ["o", ".", "x", "None"], index=0)
             marker_size = st.slider("点のサイズ", 0, 15, 4)
-            fit_color = st.color_picker("Fit線の色", value="#FF0000")
-            fit_lw = st.slider("Fit線の太さ", 0.5, 5.0, 2.0)
+            fit_color = st.color_picker("Fit線の色", value="#C12626")
+            fit_lw = st.slider("Fit線の太さ", 0.5, 5.0, 4.0)
             show_legend = st.checkbox("凡例を表示する", value=True)
             # 【機能追加】目盛り線のオンオフ
             show_grid = st.checkbox("目盛り線を表示する", value=True)
